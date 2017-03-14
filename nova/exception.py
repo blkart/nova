@@ -1755,3 +1755,7 @@ class InvalidHypervisorVirtType(Invalid):
 
 class InvalidVirtualMachineMode(Invalid):
     msg_fmt = _("Virtual machine mode '%(vmmode)s' is not recognised")
+
+
+class VolumeQoSSpecsUpdateFailed(NovaException):
+    msg_fmt = _("Failed to update volume QoS specs")
