@@ -464,6 +464,14 @@ class ComputeDriver(object):
         """
         raise NotImplementedError()
 
+    def update_volume_qos(self, instance, device_name, qos_specs):
+        """Update QoS Specs of the disk attached to the instance.
+
+        :param instance: nova.objects.instance.Instance
+        :param qos_specs: new QoS Specs of this volume
+        """
+        raise NotImplementedError()
+
     def attach_interface(self, instance, image_meta, vif):
         """Attach an interface to the instance.
 

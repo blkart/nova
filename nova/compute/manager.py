@@ -4757,6 +4757,34 @@ class ComputeManager(manager.Manager):
         self.volume_api.detach(context.elevated(), old_volume_id)
 
     @wrap_exception()
+    @reverts_task_state
+    @wrap_instance_fault
+    def update_volume_qos(self, context, instance, volume_id, qos_specs):
+        """Update volume qos specs for an instance."""
+        context = context.elevated()
+
+        bdm = objects.BlockDeviceMapping.get_by_volume_id(
+                context, volume_id, instance_uuid=instance.uuid)
+        device_name = bdm['device_name']
+        orig_cinfo = jsonutils.loads(bdm['connection_info'])
+
+        try:
+            self.driver.update_volume_qos(instance, device_name,
+                                          qos_specs)
+        except Exception:
+            with excutils.save_and_reraise_exception():
+                LOG.exception(_LE('Update QoS Specs of volume %s failed'),
+                              volume_id, instance=instance)
+
+        # Update bdm
+        new_cinfo = orig_cinfo
+        new_cinfo['data']['qos_specs'] = qos_specs
+        values = {
+            'connection_info': jsonutils.dumps(new_cinfo)
+        }
+        bdm.update(values)
+        bdm.save()
+
     def remove_volume_connection(self, context, volume_id, instance):
         """Remove a volume connection using the volume api."""
         # NOTE(vish): We don't want to actually mark the volume

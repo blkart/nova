@@ -2995,6 +2995,34 @@ class API(base.Base):
     @wrap_check_policy
     @check_instance_lock
     @check_instance_state(vm_state=[vm_states.ACTIVE, vm_states.PAUSED,
+                                    vm_states.SUSPENDED, vm_states.STOPPED,
+                                    vm_states.RESIZED, vm_states.SOFT_DELETED])
+    def update_volume_qos(self, context, instance, volume_id, qos_specs):
+        """Update one volume attached to an instance."""
+        volume = self.volume_api.get(context, volume_id)
+        if volume['attach_status'] == 'detached':
+            raise exception.VolumeUnattached(volume_id=volume_id)
+        # The caller likely got the instance from volume['instance_uuid']
+        # in the first place, but let's sanity check.
+        if volume['instance_uuid'] != instance['uuid']:
+            msg = _("Volume is attached to a different instance.")
+            raise exception.InvalidVolume(reason=msg)
+
+        try:
+            self.compute_rpcapi.update_volume_qos(
+                    context, instance=instance,
+                    volume_id=volume_id,
+                    qos_specs=qos_specs)
+        except Exception:  # pylint: disable=W0702
+            LOG.exception(_LE("Failed to update QoS Specs of the volume "
+                              "%(volume_id)s of instance %(instance_id)s"),
+                          {"volume_id": volume_id,
+                           "instance_id": instance['uuid']})
+            raise exception.VolumeQoSSpecsUpdateFailed()
+
+    @wrap_check_policy
+    @check_instance_lock
+    @check_instance_state(vm_state=[vm_states.ACTIVE, vm_states.PAUSED,
                                     vm_states.STOPPED],
                           task_state=[None])
     def attach_interface(self, context, instance, network_id, port_id,
