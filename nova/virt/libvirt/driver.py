@@ -1479,6 +1479,36 @@ class LibvirtDriver(driver.ComputeDriver):
         self._swap_volume(virt_dom, disk_dev, conf.source_path, resize_to)
         self._disconnect_volume(old_connection_info, disk_dev)
 
+    def update_volume_qos(self, instance, device_name, qos_specs):
+        virt_dom = self._lookup_by_name(instance['name'])
+        disk_dev = device_name.rpartition("/")[2]
+
+        try:
+            new_qos_specs = {}
+            orig_qos_specs = virt_dom.blockIoTune(disk_dev)
+
+            for key in orig_qos_specs.keys():
+                if (not qos_specs or
+                        key not in qos_specs.keys()):
+                    if orig_qos_specs[key] != 0:
+                        new_qos_specs[key] = 0
+                else:
+                    new_qos_specs[key] = int(qos_specs[key])
+
+            # libvirt setBlockIoTune will call getBlockIoTune,
+            # which results in we cannot call setBlockIoTune with
+            # AFFECT_LIVE and AFFECT_CONFIG specified simultaneously.
+            state = LIBVIRT_POWER_STATE[virt_dom.info()[0]]
+            if state in (power_state.RUNNING, power_state.PAUSED):
+                virt_dom.setBlockIoTune(disk_dev, new_qos_specs,
+                                        libvirt.VIR_DOMAIN_AFFECT_LIVE)
+            virt_dom.setBlockIoTune(disk_dev, new_qos_specs,
+                                    libvirt.VIR_DOMAIN_AFFECT_CONFIG)
+        except Exception:
+            with excutils.save_and_reraise_exception():
+                LOG.exception(_LE("Failed to update qos specs of disk %s"),
+                              disk_dev, instance=instance)
+
     @staticmethod
     def _get_disk_xml(xml, device):
         """Returns the xml for the disk mounted at device."""
