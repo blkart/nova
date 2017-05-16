@@ -2699,10 +2699,13 @@ class ComputeManager(manager.Manager):
             # partitions.
             raise exception.PreserveEphemeralNotSupported()
 
-        detach_block_devices(context, bdms)
-
-        if not recreate:
-            self.driver.destroy(context, instance, network_info,
+        if recreate:
+            detach_block_devices(context, bdms)
+        else:
+            self._power_off_instance(context, instance, clean_shutdown=True)
+            detach_block_devices(context, bdms)
+            self.driver.destroy(context, instance,
+                                network_info=network_info,
                                 block_device_info=block_device_info)
             root_bdm = block_device.get_root_bdm(bdms)
             if root_bdm and root_bdm.is_volume:
