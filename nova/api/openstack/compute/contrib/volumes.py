@@ -450,20 +450,40 @@ class VolumeAttachmentController(wsgi.Controller):
         authorize(context)
         authorize_attach(context, action='update')
 
-        if not self.is_valid_body(body, 'volumeAttachment'):
-            msg = _("volumeAttachment not specified")
+        if not (self.is_valid_body(body, 'volumeAttachment') or
+                self.is_valid_body(body, 'volumeQoSSpecs')):
+            msg = _("volumeAttachment or volumeQoSSpecs not specified")
             raise exc.HTTPBadRequest(explanation=msg)
 
-        old_volume_id = id
-        old_volume = self.volume_api.get(context, old_volume_id)
-
-        try:
-            new_volume_id = body['volumeAttachment']['volumeId']
-        except KeyError:
-            msg = _("volumeId must be specified.")
+        if (self.is_valid_body(body, 'volumeAttachment') and
+                self.is_valid_body(body, 'volumeQoSSpecs')):
+            msg = _("volumeAttachment and volumeQoSSpecs cannot be "
+                    "specified simultaneously")
             raise exc.HTTPBadRequest(explanation=msg)
-        self._validate_volume_id(new_volume_id)
-        new_volume = self.volume_api.get(context, new_volume_id)
+
+        if self.is_valid_body(body, 'volumeAttachment'):
+            update_volume_qos = False
+        else:
+            # Volume QoS Specs should be updated by admin users.
+            if context.is_admin:
+                update_volume_qos = True
+            else:
+                msg = _("volumeQoSSpecs can only be called by admin users")
+                raise exc.HTTPMethodNotAllowed(explanation=msg)
+
+        if update_volume_qos:
+            qos_specs = body['volumeQoSSpecs']['qos_specs']
+        else:
+            old_volume_id = id
+            old_volume = self.volume_api.get(context, old_volume_id)
+
+            try:
+                new_volume_id = body['volumeAttachment']['volumeId']
+            except KeyError:
+                msg = _("volumeId must be specified.")
+                raise exc.HTTPBadRequest(explanation=msg)
+            self._validate_volume_id(new_volume_id)
+            new_volume = self.volume_api.get(context, new_volume_id)
 
         try:
             instance = self.compute_api.get(context, server_id,
@@ -476,28 +496,41 @@ class VolumeAttachmentController(wsgi.Controller):
         found = False
         try:
             for bdm in bdms:
-                if bdm.volume_id != old_volume_id:
+                if bdm.volume_id != id:
                     continue
                 try:
-                    self.compute_api.swap_volume(context, instance, old_volume,
-                                                 new_volume)
+                    if update_volume_qos:
+                        self.compute_api.update_volume_qos(context, instance,
+                                                           id, qos_specs)
+                    else:
+                        self.compute_api.swap_volume(context, instance,
+                                                     old_volume, new_volume)
+
                     found = True
                     break
                 except exception.VolumeUnattached:
                     # The volume is not attached.  Treat it as NotFound
                     # by falling through.
                     pass
+                except exception.VolumeQoSSpecsUpdateFailed as e:
+                    raise exc.HTTPInternalServerError(
+                            explanation=e.format_message())
         except exception.InstanceIsLocked as e:
             raise exc.HTTPConflict(explanation=e.format_message())
         except exception.InstanceInvalidState as state_error:
+            action = ('update_volume_qos' if update_volume_qos
+                      else 'swap_volume')
             common.raise_http_conflict_for_instance_invalid_state(state_error,
-                    'swap_volume')
+                                                                  action)
 
         if not found:
-            msg = _("volume_id not found: %s") % old_volume_id
+            msg = _("volume_id not found: %s") % id
             raise exc.HTTPNotFound(explanation=msg)
         else:
-            return webob.Response(status_int=202)
+            # update_volume_qos is a synchronous call, so status code of 204
+            # should be returned on success.
+            status_int = 204 if update_volume_qos else 202
+            return webob.Response(status_int=status_int)
 
     def delete(self, req, server_id, id):
         """Detach a volume from an instance."""

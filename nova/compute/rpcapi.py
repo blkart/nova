@@ -732,6 +732,14 @@ class ComputeAPI(object):
                    instance=instance, old_volume_id=old_volume_id,
                    new_volume_id=new_volume_id)
 
+    def update_volume_qos(self, ctxt, instance, volume_id, qos_specs):
+        version = '3.0'
+        cctxt = self.client.prepare(server=_compute_host(None, instance),
+                version=version)
+        cctxt.call(ctxt, 'update_volume_qos',
+                   instance=instance, volume_id=volume_id,
+                   qos_specs=qos_specs)
+
     def get_host_uptime(self, ctxt, host):
         version = '3.0'
         cctxt = self.client.prepare(server=host, version=version)
