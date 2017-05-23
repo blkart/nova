@@ -2649,6 +2649,45 @@ class ComputeManager(manager.Manager):
         instance.save(expected_task_state=task_states.RESTORING)
         self._notify_about_instance_usage(context, instance, "restore.end")
 
+    def _recreate_volume_based_bdm_from_image(self, context, image_meta, bdm):
+        old_vol = self.volume_api.get(context, bdm.volume_id)
+
+        vol_size = old_vol.get('size')
+        vol_name = old_vol.get('name')
+        display_description = old_vol.get('display_description')
+        vol_type = old_vol.get('volume_type_id')
+        metadata = old_vol.get('metadata')
+        availability_zone = old_vol.get('availability_zone')
+
+        image_min_disk = int(image_meta['min_disk'] or 0) * 1024 ** 3
+        image_size = int(image_meta['size'] or 0)
+
+        dest_size = int(vol_size) * 1024 ** 3
+
+        if image_size > dest_size:
+            raise exception.FlavorDiskSmallerThanImage(
+                flavor_size=dest_size, image_size=image_size)
+
+        if image_min_disk > dest_size:
+            raise exception.FlavorDiskSmallerThanMinDisk(
+                flavor_size=dest_size, image_min_disk=image_min_disk)
+
+        new_vol = self.volume_api.create(context,
+                                         vol_size,
+                                         vol_name,
+                                         display_description,
+                                         volume_type=vol_type,
+                                         metadata=metadata,
+                                         availability_zone=availability_zone,
+                                         image_id=image_meta['id'])
+        self._await_block_device_map_created(context, new_vol['id'])
+        LOG.debug('Created new root volume %s. Updating bdm.',
+                  new_vol['id'])
+        bdm.volume_id = new_vol['id']
+        bdm.connection_info = None
+        bdm.image_id = image_meta['id']
+        return bdm
+
     def _rebuild_default_impl(self, context, instance, image_meta,
                               injected_files, admin_password, bdms,
                               detach_block_devices, attach_block_devices,
@@ -2660,11 +2699,30 @@ class ComputeManager(manager.Manager):
             # partitions.
             raise exception.PreserveEphemeralNotSupported()
 
-        detach_block_devices(context, bdms)
-
-        if not recreate:
-            self.driver.destroy(context, instance, network_info,
+        if recreate:
+            detach_block_devices(context, bdms)
+        else:
+            self._power_off_instance(context, instance, clean_shutdown=True)
+            detach_block_devices(context, bdms)
+            self.driver.destroy(context, instance,
+                                network_info=network_info,
                                 block_device_info=block_device_info)
+            root_bdm = block_device.get_root_bdm(bdms)
+            if root_bdm and root_bdm.is_volume:
+                old_vol_id = root_bdm.volume_id
+                new_root_bdm = self._recreate_volume_based_bdm_from_image(
+                    context, image_meta, root_bdm)
+                if root_bdm.delete_on_termination:
+                    try:
+                        self.volume_api.delete(context, old_vol_id)
+                    except Exception as exc:
+                        LOG.warning(_LW('Failed to delete volume: '
+                                        '%(volume_id)s due to %(exc)s'),
+                                    {'volume_id': root_bdm.volume_id,
+                                     'exc': exc})
+                bdms = list(block_device.get_bdms_to_connect(
+                    bdms, exclude_root_mapping=True))
+                bdms.insert(0, new_root_bdm)
 
         instance.task_state = task_states.REBUILD_BLOCK_DEVICE_MAPPING
         instance.save(expected_task_state=[task_states.REBUILDING])
@@ -2808,7 +2866,8 @@ class ComputeManager(manager.Manager):
             def detach_block_devices(context, bdms):
                 for bdm in bdms:
                     if bdm.is_volume:
-                        self.volume_api.detach(context, bdm.volume_id)
+                        self._detach_volume(context, bdm.volume_id, instance,
+                                            destroy_bdm=False)
 
             files = self._decode_files(injected_files)
 
@@ -4580,7 +4639,7 @@ class ComputeManager(manager.Manager):
         self._notify_about_instance_usage(
             context, instance, "volume.attach", extra_usage_info=info)
 
-    def _detach_volume(self, context, instance, bdm):
+    def _driver_detach_volume(self, context, instance, bdm):
         """Do the actual driver detach using block device mapping."""
         mp = bdm.device_name
         volume_id = bdm.volume_id
@@ -4614,12 +4673,18 @@ class ComputeManager(manager.Manager):
                               context=context, instance=instance)
                 self.volume_api.roll_detaching(context, volume_id)
 
-    @object_compat
-    @wrap_exception()
-    @reverts_task_state
-    @wrap_instance_fault
-    def detach_volume(self, context, volume_id, instance):
-        """Detach a volume from an instance."""
+    def _detach_volume(self, context, volume_id, instance, destroy_bdm=True):
+        """Detach a volume from an instance.
+
+        :param context: security context
+        :param volume_id: the volume id
+        :param instance: the Instance object to detach the volume from
+        :param destroy_bdm: if True, the corresponding BDM entry will be marked
+                            as deleted. Disabling this is useful for operations
+                            like rebuild, when we don't want to destroy BDM
+
+        """
+
         bdm = objects.BlockDeviceMapping.get_by_volume_id(
                 context, volume_id)
         if CONF.volume_usage_poll_interval > 0:
@@ -4643,14 +4708,26 @@ class ComputeManager(manager.Manager):
                                                     instance,
                                                     update_totals=True)
 
-        self._detach_volume(context, instance, bdm)
+        self._driver_detach_volume(context, instance, bdm)
         connector = self.driver.get_volume_connector(instance)
         self.volume_api.terminate_connection(context, volume_id, connector)
-        bdm.destroy()
+
+        if destroy_bdm:
+            bdm.destroy()
+
         info = dict(volume_id=volume_id)
         self._notify_about_instance_usage(
             context, instance, "volume.detach", extra_usage_info=info)
         self.volume_api.detach(context.elevated(), volume_id)
+
+    @object_compat
+    @wrap_exception()
+    @reverts_task_state
+    @wrap_instance_fault
+    def detach_volume(self, context, volume_id, instance):
+        """Detach a volume from an instance."""
+
+        self._detach_volume(context, volume_id, instance)
 
     def _init_volume_connection(self, context, new_volume_id,
                                 old_volume_id, connector, instance, bdm):
@@ -4802,7 +4879,7 @@ class ComputeManager(manager.Manager):
         try:
             bdm = objects.BlockDeviceMapping.get_by_volume_id(
                     context, volume_id)
-            self._detach_volume(context, instance, bdm)
+            self._driver_detach_volume(context, instance, bdm)
             connector = self.driver.get_volume_connector(instance)
             self.volume_api.terminate_connection(context, volume_id, connector)
         except exception.NotFound:
