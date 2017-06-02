@@ -557,9 +557,21 @@ class ComputeTaskManager(base.Base):
     def _live_migrate(self, context, instance, scheduler_hint,
                       block_migration, disk_over_commit):
         destination = scheduler_hint.get("host")
+
+        migration = objects.Migration(context=context.elevated())
+        migration.dest_compute = destination
+        migration.status = 'pre-migrating'
+        migration.instance_uuid = instance.uuid
+        migration.source_compute = instance.host
+        migration.migration_type = 'live-migration'
+        migration.old_instance_type_id = instance.instance_type_id
+        migration.new_instance_type_id = instance.instance_type_id
+        migration.create()
+
         try:
             live_migrate.execute(context, instance, destination,
-                             block_migration, disk_over_commit)
+                                 block_migration, disk_over_commit,
+                                 migration)
         except (exception.NoValidHost,
                 exception.ComputeServiceUnavailable,
                 exception.InvalidHypervisorType,
@@ -582,11 +594,15 @@ class ComputeTaskManager(base.Base):
                              task_state=None,
                              expected_task_state=task_states.MIGRATING,),
                         ex, request_spec, self.db)
+                migration.status = 'error'
+                migration.save()
         except Exception as ex:
             LOG.error(_('Migration of instance %(instance_id)s to host'
                        ' %(dest)s unexpectedly failed.'),
                        {'instance_id': instance['uuid'], 'dest': destination},
                        exc_info=True)
+            migration.status = 'failed'
+            migration.save()
             raise exception.MigrationError(reason=ex)
 
     def build_instances(self, context, instances, image, filter_properties,

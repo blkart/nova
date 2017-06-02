@@ -274,6 +274,8 @@ class ComputeAPI(object):
         ... Juno supports message version 3.35.  So, any changes to
         existing methods in 3.x after that point should be done such that they
         can handle the version_cap being set to 3.35.
+
+        * 3.36  - Add migration argument to live_migration()
     '''
 
     VERSION_ALIASES = {
@@ -522,8 +524,11 @@ class ComputeAPI(object):
         cctxt.cast(ctxt, 'inject_network_info', instance=instance)
 
     def live_migration(self, ctxt, instance, dest, block_migration, host,
-                       migrate_data=None):
-        if self.client.can_send_version('3.26'):
+                       migration, migrate_data=None):
+        args = {'migration': migration}
+        if self.client.can_send_version('3.36'):
+            version = '3.36'
+        elif self.client.can_send_version('3.26'):
             version = '3.26'
         else:
             version = '3.0'
@@ -531,7 +536,7 @@ class ComputeAPI(object):
         cctxt = self.client.prepare(server=host, version=version)
         cctxt.cast(ctxt, 'live_migration', instance=instance,
                    dest=dest, block_migration=block_migration,
-                   migrate_data=migrate_data)
+                   migrate_data=migrate_data, **args)
 
     def pause_instance(self, ctxt, instance):
         version = '3.0'

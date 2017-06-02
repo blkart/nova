@@ -1129,17 +1129,21 @@ class _BaseTaskTestCase(object):
             rebuild_args.update(update_args)
         return rebuild_args
 
-    def test_live_migrate(self):
+    @mock.patch('nova.objects.Migration')
+    def test_live_migrate(self, migobj):
         inst = fake_instance.fake_db_instance()
         inst_obj = objects.Instance._from_db_object(
             self.context, objects.Instance(), inst, [])
+
+        migration = migobj()
 
         self.mox.StubOutWithMock(live_migrate, 'execute')
         live_migrate.execute(self.context,
                              mox.IsA(objects.Instance),
                              'destination',
                              'block_migration',
-                             'disk_over_commit')
+                             'disk_over_commit',
+                             migration)
         self.mox.ReplayAll()
 
         if isinstance(self.conductor, (conductor_api.ComputeTaskAPI,
@@ -1152,6 +1156,10 @@ class _BaseTaskTestCase(object):
             self.conductor.migrate_server(self.context, inst_obj,
                 {'host': 'destination'}, True, False, None,
                  'block_migration', 'disk_over_commit')
+
+        self.assertEqual('pre-migrating', migration.status)
+        self.assertEqual('destination', migration.dest_compute)
+        self.assertEqual(inst_obj.host, migration.source_compute)
 
     def test_cold_migrate(self):
         self.mox.StubOutWithMock(compute_utils, 'get_image_metadata')
@@ -1586,7 +1594,8 @@ class ConductorTaskTestCase(_BaseTaskTestCase, test_compute.BaseTestCase):
                 'uuid': instance['uuid'], },
         }
 
-    def _test_migrate_server_deals_with_expected_exceptions(self, ex):
+    @mock.patch('nova.objects.Migration')
+    def _test_migrate_server_deals_with_expected_exceptions(self, ex, migobj):
         instance = fake_instance.fake_db_instance(uuid='uuid',
                                                   vm_state=vm_states.ACTIVE)
         inst_obj = objects.Instance._from_db_object(
@@ -1595,9 +1604,11 @@ class ConductorTaskTestCase(_BaseTaskTestCase, test_compute.BaseTestCase):
         self.mox.StubOutWithMock(scheduler_utils,
                 'set_vm_state_and_notify')
 
+        migration = migobj()
+
         live_migrate.execute(self.context, mox.IsA(objects.Instance),
                              'destination', 'block_migration',
-                             'disk_over_commit').AndRaise(ex)
+                             'disk_over_commit', migration).AndRaise(ex)
 
         scheduler_utils.set_vm_state_and_notify(self.context,
                 'compute_task', 'migrate_server',
@@ -1615,6 +1626,8 @@ class ConductorTaskTestCase(_BaseTaskTestCase, test_compute.BaseTestCase):
             {'host': 'destination'}, True, False, None, 'block_migration',
             'disk_over_commit')
 
+        self.assertEqual('error', migration.status)
+
     def test_migrate_server_deals_with_invalidcpuinfo_exception(self):
         instance = fake_instance.fake_db_instance(uuid='uuid',
                                                   vm_state=vm_states.ACTIVE)
@@ -1627,7 +1640,8 @@ class ConductorTaskTestCase(_BaseTaskTestCase, test_compute.BaseTestCase):
         ex = exc.InvalidCPUInfo(reason="invalid cpu info.")
         live_migrate.execute(self.context, mox.IsA(objects.Instance),
                              'destination', 'block_migration',
-                             'disk_over_commit').AndRaise(ex)
+                             'disk_over_commit',
+                             mox.IsA(objects.Migration)).AndRaise(ex)
 
         scheduler_utils.set_vm_state_and_notify(self.context,
                 'compute_task', 'migrate_server',
