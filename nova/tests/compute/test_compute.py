@@ -7046,6 +7046,7 @@ class ComputeTestCase(BaseTestCase):
         migration = objects.Migration()
         migration.instance_uuid = instance.uuid
         migration.status = 'finished'
+        migration.migration_type = 'resize'
         migration.create(self.context.elevated())
 
         instance.task_state = task_states.DELETING
