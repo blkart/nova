@@ -930,6 +930,15 @@ class MigrationTestCase(test.TestCase):
             hosts = [migration['source_compute'], migration['dest_compute']]
             self.assertIn(filters["host"], hosts)
 
+    def test_get_migrations_by_filters_source_compute(self):
+        filters = {'source_compute': 'host2'}
+        migrations = db.migration_get_all_by_filters(self.ctxt, filters)
+        self.assertEqual(2, len(migrations))
+        sources = [x['source_compute'] for x in migrations]
+        self.assertEqual(['host2', 'host2'], sources)
+        dests = [x['dest_compute'] for x in migrations]
+        self.assertEqual(['host1', 'host3'], dests)
+
     def test_only_admin_can_get_all_migrations_by_filters(self):
         user_ctxt = context.RequestContext(user_id=None, project_id=None,
                                    is_admin=False, read_deleted="no",
