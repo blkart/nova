@@ -307,11 +307,13 @@ class ComputeManagerUnitTestCase(test.NoDBTestCase):
         self.mox.UnsetStubs()
 
     @mock.patch('nova.objects.InstanceList')
-    def test_cleanup_host(self, mock_instance_list):
+    @mock.patch('nova.objects.MigrationList.get_by_filters')
+    def test_cleanup_host(self, mock_miglist_get, mock_instance_list):
         # just testing whether the cleanup_host method
         # when fired will invoke the underlying driver's
         # equivalent method.
 
+        mock_miglist_get.return_value = []
         mock_instance_list.get_by_host.return_value = []
 
         with mock.patch.object(self.compute, 'driver') as mock_driver:
@@ -321,13 +323,17 @@ class ComputeManagerUnitTestCase(test.NoDBTestCase):
             self.compute.cleanup_host()
             mock_driver.cleanup_host.assert_called_once_with(host='fake-mini')
 
-    def test_init_host_with_deleted_migration(self):
+    @mock.patch('nova.objects.MigrationList.get_by_filters')
+    @mock.patch('nova.objects.Migration.save')
+    def test_init_host_with_evacuated_instance(self, mock_save, mock_mig_get):
         our_host = self.compute.host
         not_our_host = 'not-' + our_host
         fake_context = 'fake-context'
 
         deleted_instance = fake_instance.fake_instance_obj(
                 self.context, host=not_our_host, uuid='fake-uuid')
+        migration = objects.Migration(instance_uuid=deleted_instance.uuid)
+        mock_mig_get.return_value = [migration]
 
         self.mox.StubOutWithMock(self.compute.driver, 'init_host')
         self.mox.StubOutWithMock(self.compute.driver, 'destroy')
@@ -1774,19 +1780,21 @@ class ComputeManagerUnitTestCase(test.NoDBTestCase):
         self._do_test_set_admin_password_driver_error(
             exc, vm_states.ACTIVE, None, expected_exception)
 
-    def _test_init_host_with_partial_migration(self, task_state=None,
-                                               vm_state=vm_states.ACTIVE):
+    def test_destroy_evacuated_instances(self):
         our_host = self.compute.host
         instance_1 = objects.Instance(self.context)
         instance_1.uuid = 'foo'
-        instance_1.task_state = task_state
-        instance_1.vm_state = vm_state
+        instance_1.task_state = None
+        instance_1.vm_state = vm_states.ACTIVE
         instance_1.host = 'not-' + our_host
         instance_2 = objects.Instance(self.context)
         instance_2.uuid = 'bar'
         instance_2.task_state = None
         instance_2.vm_state = vm_states.ACTIVE
         instance_2.host = 'not-' + our_host
+
+        # Only instance 2 has a migration record
+        migration = objects.Migration(instance_uuid=instance_2.uuid)
 
         with contextlib.nested(
             mock.patch.object(self.compute, '_get_instances_on_driver',
@@ -1798,33 +1806,18 @@ class ComputeManagerUnitTestCase(test.NoDBTestCase):
                                return_value={}),
             mock.patch.object(self.compute, '_is_instance_storage_shared',
                                return_value=False),
-            mock.patch.object(self.compute.driver, 'destroy')
+            mock.patch.object(self.compute.driver, 'destroy'),
+            mock.patch('nova.objects.MigrationList.get_by_filters'),
+            mock.patch('nova.objects.Migration.save')
         ) as (_get_instances_on_driver, _get_instance_nw_info,
               _get_instance_block_device_info, _is_instance_storage_shared,
-              destroy):
+              destroy, migration_list, migration_save):
+            migration_list.return_value = [migration]
             self.compute._destroy_evacuated_instances(self.context)
+            # Only instance 2 should be deleted. Instance 1 is still running
+            # here, but no migration from our host exists, so ignore it
             destroy.assert_called_once_with(self.context, instance_2, None,
                                             {}, True)
-
-    def test_init_host_with_partial_migration_migrating(self):
-        self._test_init_host_with_partial_migration(
-            task_state=task_states.MIGRATING)
-
-    def test_init_host_with_partial_migration_resize_migrating(self):
-        self._test_init_host_with_partial_migration(
-            task_state=task_states.RESIZE_MIGRATING)
-
-    def test_init_host_with_partial_migration_resize_migrated(self):
-        self._test_init_host_with_partial_migration(
-            task_state=task_states.RESIZE_MIGRATED)
-
-    def test_init_host_with_partial_migration_finish_resize(self):
-        self._test_init_host_with_partial_migration(
-            task_state=task_states.RESIZE_FINISH)
-
-    def test_init_host_with_partial_migration_resized(self):
-        self._test_init_host_with_partial_migration(
-            vm_state=vm_states.RESIZED)
 
     @mock.patch('nova.compute.manager.ComputeManager._instance_update')
     def test_error_out_instance_on_exception_not_implemented_err(self,
