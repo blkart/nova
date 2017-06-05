@@ -1544,6 +1544,8 @@ class _BaseTaskTestCase(object):
             rebuild_mock.assert_called_once_with(self.context,
                                             instance=inst_obj,
                                             **rebuild_args)
+        self.assertEqual('compute.instance.rebuild.scheduled',
+                         fake_notifier.NOTIFICATIONS[0].event_type)
 
     def test_rebuild_instance_with_scheduler_no_host(self):
         db_instance = jsonutils.to_primitive(self._create_fake_instance())
