@@ -18,6 +18,7 @@ import copy
 import itertools
 
 from oslo import messaging
+from oslo.config import cfg
 import six
 
 from nova.api.ec2 import ec2utils
@@ -44,11 +45,13 @@ from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
 from nova.openstack.common import timeutils
 from nova import quota
+from nova import rpc
 from nova.scheduler import client as scheduler_client
 from nova.scheduler import driver as scheduler_driver
 from nova.scheduler import utils as scheduler_utils
 
 LOG = logging.getLogger(__name__)
+CONF = cfg.CONF
 
 # Instead of having a huge list of arguments to instance_update(), we just
 # accept a dict of fields to update and use this whitelist to validate it.
@@ -455,6 +458,7 @@ class ComputeTaskManager(base.Base):
         self.compute_rpcapi = compute_rpcapi.ComputeAPI()
         self.image_api = image.API()
         self.scheduler_client = scheduler_client.SchedulerClient()
+        self.notifier = rpc.get_notifier('compute', CONF.host)
 
     @messaging.expected_exceptions(exception.NoValidHost,
                                    exception.ComputeServiceUnavailable,
@@ -760,6 +764,9 @@ class ComputeTaskManager(base.Base):
                                  'task_state': None}, ex, request_spec)
                         LOG.warning(_("No valid host found for rebuild"),
                                       instance=instance)
+
+            compute_utils.notify_about_instance_usage(
+                self.notifier, context, instance, "rebuild.scheduled")
 
             self.compute_rpcapi.rebuild_instance(context,
                     instance=instance,
