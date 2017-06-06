@@ -1049,10 +1049,10 @@ class InstanceClaimTestCase(BaseTrackerTestCase):
                                                     "fakenode")
 
 
-class ResizeClaimTestCase(BaseTrackerTestCase):
+class MoveClaimTestCase(BaseTrackerTestCase):
 
     def setUp(self):
-        super(ResizeClaimTestCase, self).setUp()
+        super(MoveClaimTestCase, self).setUp()
 
         def _fake_migration_create(mig_self, ctxt):
             self._migrations[mig_self.instance_uuid] = mig_self
@@ -1190,7 +1190,7 @@ class ResizeClaimTestCase(BaseTrackerTestCase):
     def test_revert(self, mock_get):
         self.tracker.resize_claim(self.context, self.instance,
                 self.instance_type, {}, self.limits)
-        self.tracker.drop_resize_claim(self.context, self.instance)
+        self.tracker.drop_move_claim(self.context, self.instance)
 
         self.assertEqual(0, len(self.tracker.tracked_instances))
         self.assertEqual(0, len(self.tracker.tracked_migrations))
@@ -1302,7 +1302,7 @@ class ResizeClaimTestCase(BaseTrackerTestCase):
         self.assertEqual('fakenode', instance['node'])
 
 
-class NoInstanceTypesInSysMetadata(ResizeClaimTestCase):
+class NoInstanceTypesInSysMetadata(MoveClaimTestCase):
     """Make sure we handle the case where the following are true:
 
     #) Compute node C gets upgraded to code that looks for instance types in
