@@ -1049,10 +1049,10 @@ class InstanceClaimTestCase(BaseTrackerTestCase):
                                                     "fakenode")
 
 
-class MoveClaimTestCase(BaseTrackerTestCase):
+class _MoveClaimTestCase(BaseTrackerTestCase):
 
     def setUp(self):
-        super(MoveClaimTestCase, self).setUp()
+        super(_MoveClaimTestCase, self).setUp()
 
         def _fake_migration_create(mig_self, ctxt):
             self._migrations[mig_self.instance_uuid] = mig_self
@@ -1063,6 +1063,7 @@ class MoveClaimTestCase(BaseTrackerTestCase):
 
         self.instance = self._fake_instance()
         self.instance_type = self._fake_flavor_create()
+        self.claim_method = self.tracker._move_claim
 
     def _fake_migration_create(self, context, values=None):
         instance_uuid = str(uuid.uuid1())
@@ -1091,8 +1092,8 @@ class MoveClaimTestCase(BaseTrackerTestCase):
     @mock.patch('nova.objects.InstancePCIRequests.get_by_instance_uuid',
                 return_value=objects.InstancePCIRequests(requests=[]))
     def test_claim(self, mock_get):
-        self.tracker.resize_claim(self.context, self.instance,
-                self.instance_type, self.limits)
+        self.claim_method(self.context, self.instance,
+                self.instance_type, limits=self.limits)
         self._assert(FAKE_VIRT_MEMORY_WITH_OVERHEAD, 'memory_mb_used')
         self._assert(FAKE_VIRT_LOCAL_GB, 'local_gb_used')
         self._assert(FAKE_VIRT_VCPUS, 'vcpus_used')
@@ -1102,8 +1103,8 @@ class MoveClaimTestCase(BaseTrackerTestCase):
                 return_value=objects.InstancePCIRequests(requests=[]))
     def test_abort(self, mock_get):
         try:
-            with self.tracker.resize_claim(self.context, self.instance,
-                    self.instance_type, self.limits):
+            with self.claim_method(self.context, self.instance,
+                    self.instance_type, limits=self.limits):
                 raise test.TestingException("abort")
         except test.TestingException:
             pass
@@ -1121,11 +1122,11 @@ class MoveClaimTestCase(BaseTrackerTestCase):
               2 * FAKE_VIRT_MEMORY_WITH_OVERHEAD,
               2 * FAKE_VIRT_LOCAL_GB,
               2 * FAKE_VIRT_VCPUS)
-        self.tracker.resize_claim(self.context, self.instance,
-                self.instance_type, limits)
+        self.claim_method(
+            self.context, self.instance, self.instance_type, limits=limits)
         instance2 = self._fake_instance()
-        self.tracker.resize_claim(self.context, instance2, self.instance_type,
-                limits)
+        self.claim_method(
+            self.context, instance2, self.instance_type, limits=limits)
 
         self._assert(2 * FAKE_VIRT_MEMORY_WITH_OVERHEAD, 'memory_mb_used')
         self._assert(2 * FAKE_VIRT_LOCAL_GB, 'local_gb_used')
@@ -1188,8 +1189,9 @@ class MoveClaimTestCase(BaseTrackerTestCase):
     @mock.patch('nova.objects.InstancePCIRequests.get_by_instance_uuid',
                 return_value=objects.InstancePCIRequests(requests=[]))
     def test_revert(self, mock_get):
-        self.tracker.resize_claim(self.context, self.instance,
-                self.instance_type, {}, self.limits)
+        self.claim_method(
+            self.context, self.instance, self.instance_type,
+            image_meta={}, limits=self.limits)
         self.tracker.drop_move_claim(self.context, self.instance)
 
         self.assertEqual(0, len(self.tracker.tracked_instances))
@@ -1302,7 +1304,7 @@ class MoveClaimTestCase(BaseTrackerTestCase):
         self.assertEqual('fakenode', instance['node'])
 
 
-class NoInstanceTypesInSysMetadata(MoveClaimTestCase):
+class NoInstanceTypesInSysMetadata(_MoveClaimTestCase):
     """Make sure we handle the case where the following are true:
 
     #) Compute node C gets upgraded to code that looks for instance types in
@@ -1322,6 +1324,13 @@ class NoInstanceTypesInSysMetadata(MoveClaimTestCase):
             flavor = self.tracker._get_instance_type(self.context,
                                                      self.instance, "new_")
             self.assertEqual(self.instance_type, flavor)
+
+
+class ResizeClaimTestCase(_MoveClaimTestCase):
+    def setUp(self):
+        super(ResizeClaimTestCase, self).setUp()
+
+        self.claim_method = self.tracker.resize_claim
 
 
 class OrphanTestCase(BaseTrackerTestCase):
