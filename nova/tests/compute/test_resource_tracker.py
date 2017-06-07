@@ -617,6 +617,15 @@ class TrackerTestCase(BaseTrackerTestCase):
         self.assertEqual(driver.pci_stats,
             jsonutils.loads(self.tracker.compute_node['pci_stats']))
 
+    def test_set_instance_host_and_node(self):
+        inst = objects.Instance()
+        with mock.patch.object(inst, 'save') as mock_save:
+            self.tracker._set_instance_host_and_node(self.context, inst)
+            mock_save.assert_called_once_with()
+        self.assertEqual(self.tracker.host, inst.host)
+        self.assertEqual(self.tracker.nodename, inst.node)
+        self.assertEqual(self.tracker.host, inst.launched_on)
+
 
 class SchedulerClientTrackerTestCase(BaseTrackerTestCase):
 
@@ -1290,13 +1299,14 @@ class _MoveClaimTestCase(BaseTrackerTestCase):
 
     @mock.patch('nova.objects.InstancePCIRequests.get_by_instance_uuid',
                 return_value=objects.InstancePCIRequests(requests=[]))
-    def test_set_instance_host_and_node(self, mock_get):
-        instance = self._fake_instance()
+    def test_claim_sets_instance_host_and_node(self, mock_get):
+        instance = self._fake_instance_obj()
         self.assertIsNone(instance['host'])
         self.assertIsNone(instance['launched_on'])
         self.assertIsNone(instance['node'])
 
-        claim = self.tracker.instance_claim(self.context, instance)
+        with mock.patch.object(instance, 'save'):
+            claim = self.tracker.instance_claim(self.context, instance)
         self.assertNotEqual(0, claim.memory_mb)
 
         self.assertEqual('fakehost', instance['host'])
