@@ -20,7 +20,6 @@ import uuid
 import mock
 from oslo.config import cfg
 
-from nova.compute import flavors
 from nova.compute import resource_tracker
 from nova.compute import resources
 from nova.compute import task_states
@@ -152,14 +151,10 @@ class BaseTestCase(test.TestCase):
                                             manager=CONF.conductor.manager)
 
         self._instances = {}
-        self._numa_topologies = {}
         self._instance_types = {}
 
-        self.stubs.Set(self.conductor.db,
-                       'instance_get_all_by_host_and_node',
-                       self._fake_instance_get_all_by_host_and_node)
-        self.stubs.Set(db, 'instance_extra_get_by_instance_uuid',
-                       self._fake_instance_extra_get_by_instance_uuid)
+        self.stubs.Set(objects.InstanceList, 'get_by_host_and_node',
+                       self._fake_instance_get_by_host_and_node)
         self.stubs.Set(self.conductor.db,
                        'instance_update_and_get_original',
                        self._fake_instance_update_and_get_original)
@@ -206,96 +201,6 @@ class BaseTestCase(test.TestCase):
         }
         return service
 
-    def _fake_instance_system_metadata(self, instance_type, prefix=''):
-        sys_meta = []
-        for key in flavors.system_metadata_flavor_props.keys():
-            sys_meta.append({'key': '%sinstance_type_%s' % (prefix, key),
-                             'value': instance_type[key]})
-        return sys_meta
-
-    def _fake_instance(self, stash=True, flavor=None, **kwargs):
-
-        # Default to an instance ready to resize to or from the same
-        # instance_type
-        flavor = flavor or self._fake_flavor_create()
-        sys_meta = self._fake_instance_system_metadata(flavor)
-
-        if stash:
-            # stash instance types in system metadata.
-            sys_meta = (sys_meta +
-                        self._fake_instance_system_metadata(flavor, 'new_') +
-                        self._fake_instance_system_metadata(flavor, 'old_'))
-
-        instance_uuid = str(uuid.uuid1())
-        instance = {
-            'uuid': instance_uuid,
-            'vm_state': vm_states.RESIZED,
-            'task_state': None,
-            'ephemeral_key_uuid': None,
-            'os_type': 'Linux',
-            'project_id': '123456',
-            'host': None,
-            'node': None,
-            'instance_type_id': flavor['id'],
-            'memory_mb': flavor['memory_mb'],
-            'vcpus': flavor['vcpus'],
-            'root_gb': flavor['root_gb'],
-            'ephemeral_gb': flavor['ephemeral_gb'],
-            'launched_on': None,
-            'system_metadata': sys_meta,
-            'availability_zone': None,
-            'vm_mode': None,
-            'reservation_id': None,
-            'display_name': None,
-            'default_swap_device': None,
-            'power_state': None,
-            'scheduled_at': None,
-            'access_ip_v6': None,
-            'access_ip_v4': None,
-            'key_name': None,
-            'updated_at': None,
-            'cell_name': None,
-            'locked': None,
-            'locked_by': None,
-            'launch_index': None,
-            'architecture': None,
-            'auto_disk_config': None,
-            'terminated_at': None,
-            'ramdisk_id': None,
-            'user_data': None,
-            'cleaned': None,
-            'deleted_at': None,
-            'id': 333,
-            'disable_terminate': None,
-            'hostname': None,
-            'display_description': None,
-            'key_data': None,
-            'deleted': None,
-            'default_ephemeral_device': None,
-            'progress': None,
-            'launched_at': None,
-            'config_drive': None,
-            'kernel_id': None,
-            'user_id': None,
-            'shutdown_terminate': None,
-            'created_at': None,
-            'image_ref': None,
-            'root_device_name': None,
-        }
-        numa_topology = kwargs.pop('numa_topology', None)
-        if numa_topology:
-            numa_topology = {
-                'id': 1, 'created_at': None, 'updated_at': None,
-                'deleted_at': None, 'deleted': None,
-                'instance_uuid': instance['uuid'],
-                'numa_topology': numa_topology.to_json()
-            }
-        instance.update(kwargs)
-
-        self._instances[instance_uuid] = instance
-        self._numa_topologies[instance_uuid] = numa_topology
-        return instance
-
     def _fake_flavor_create(self, **kwargs):
         instance_type = {
             'id': 1,
@@ -322,12 +227,10 @@ class BaseTestCase(test.TestCase):
         self._instance_types[id_] = instance_type
         return instance_type
 
-    def _fake_instance_get_all_by_host_and_node(self, context, host, nodename):
-        return [i for i in self._instances.values() if i['host'] == host]
-
-    def _fake_instance_extra_get_by_instance_uuid(self, context,
-                                                          instance_uuid):
-        return self._numa_topologies.get(instance_uuid)
+    def _fake_instance_get_by_host_and_node(self, context, host, nodename,
+                                            expected_attrs=None):
+        return objects.InstanceList(
+            objects=[i for i in self._instances.values() if i['host'] == host])
 
     def _fake_flavor_get(self, ctxt, id_):
         return self._instance_types[id_]
@@ -378,30 +281,30 @@ class UnsupportedDriverTestCase(BaseTestCase):
 
     def test_disabled_claim(self):
         # basic claim:
-        instance = self._fake_instance()
+        instance = self._fake_instance_obj()
         claim = self.tracker.instance_claim(self.context, instance)
         self.assertEqual(0, claim.memory_mb)
 
     def test_disabled_instance_claim(self):
         # instance variation:
-        instance = self._fake_instance()
+        instance = self._fake_instance_obj()
         claim = self.tracker.instance_claim(self.context, instance)
         self.assertEqual(0, claim.memory_mb)
 
     def test_disabled_instance_context_claim(self):
         # instance context manager variation:
-        instance = self._fake_instance()
+        instance = self._fake_instance_obj()
         claim = self.tracker.instance_claim(self.context, instance)
         with self.tracker.instance_claim(self.context, instance) as claim:
             self.assertEqual(0, claim.memory_mb)
 
     def test_disabled_updated_usage(self):
-        instance = self._fake_instance(host='fakehost', memory_mb=5,
+        instance = self._fake_instance_obj(host='fakehost', memory_mb=5,
                 root_gb=10)
         self.tracker.update_usage(self.context, instance)
 
     def test_disabled_resize_claim(self):
-        instance = self._fake_instance()
+        instance = self._fake_instance_obj()
         instance_type = self._fake_flavor_create()
         claim = self.tracker.resize_claim(self.context, instance,
                 instance_type)
@@ -411,7 +314,7 @@ class UnsupportedDriverTestCase(BaseTestCase):
                 claim.migration['new_instance_type_id'])
 
     def test_disabled_resize_context_claim(self):
-        instance = self._fake_instance()
+        instance = self._fake_instance_obj()
         instance_type = self._fake_flavor_create()
         with self.tracker.resize_claim(self.context, instance, instance_type) \
                                        as claim:
@@ -748,7 +651,7 @@ class InstanceClaimTestCase(BaseTrackerTestCase):
 
         instance_topology = self._instance_topology(claim_mem / 2)
 
-        instance = self._fake_instance(
+        instance = self._fake_instance_obj(
                 flavor=flavor, task_state=None,
                 numa_topology=instance_topology)
         self.tracker.update_usage(self.context, instance)
@@ -783,7 +686,7 @@ class InstanceClaimTestCase(BaseTrackerTestCase):
         claim_topology = self._claim_topology(claim_mem_total / 2)
 
         instance_topology = self._instance_topology(claim_mem_total / 2)
-        instance = self._fake_instance(memory_mb=claim_mem, root_gb=claim_disk,
+        instance = self._fake_instance_obj(memory_mb=claim_mem, root_gb=claim_disk,
                 ephemeral_gb=0, numa_topology=instance_topology)
 
         self.tracker.instance_claim(self.context, instance, self.limits)
@@ -834,7 +737,7 @@ class InstanceClaimTestCase(BaseTrackerTestCase):
         claim_topology = self._claim_topology(claim_mem_total / 2)
 
         instance_topology = self._instance_topology(claim_mem_total / 2)
-        instance = self._fake_instance(memory_mb=claim_mem,
+        instance = self._fake_instance_obj(memory_mb=claim_mem,
                 root_gb=claim_disk, ephemeral_gb=0,
                 numa_topology=instance_topology)
 
@@ -879,7 +782,7 @@ class InstanceClaimTestCase(BaseTrackerTestCase):
                   'vcpu': vcpus,
                   'numa_topology': FAKE_VIRT_NUMA_TOPOLOGY_OVERHEAD.to_json()}
 
-        instance = self._fake_instance(memory_mb=memory_mb,
+        instance = self._fake_instance_obj(memory_mb=memory_mb,
                 root_gb=root_gb, ephemeral_gb=ephemeral_gb,
                 numa_topology=instance_topology)
 
@@ -902,11 +805,11 @@ class InstanceClaimTestCase(BaseTrackerTestCase):
         flavor = self._fake_flavor_create(
                 memory_mb=1, root_gb=1, ephemeral_gb=0)
         instance_topology = self._instance_topology(1)
-        instance = self._fake_instance(
+        instance = self._fake_instance_obj(
                 flavor=flavor, numa_topology=instance_topology)
         with self.tracker.instance_claim(self.context, instance, self.limits):
             pass
-        instance = self._fake_instance(
+        instance = self._fake_instance_obj(
                 flavor=flavor, numa_topology=instance_topology)
         with self.tracker.instance_claim(self.context, instance, self.limits):
             pass
@@ -926,7 +829,7 @@ class InstanceClaimTestCase(BaseTrackerTestCase):
     @mock.patch('nova.objects.InstancePCIRequests.get_by_instance_uuid',
                 return_value=objects.InstancePCIRequests(requests=[]))
     def test_context_claim_with_exception(self, mock_get):
-        instance = self._fake_instance(memory_mb=1, root_gb=1, ephemeral_gb=1)
+        instance = self._fake_instance_obj(memory_mb=1, root_gb=1, ephemeral_gb=1)
         try:
             with self.tracker.instance_claim(self.context, instance):
                 # <insert exciting things that utilize resources>
@@ -951,7 +854,7 @@ class InstanceClaimTestCase(BaseTrackerTestCase):
         claim_topology = self._claim_topology(1)
 
         instance_topology = self._instance_topology(1)
-        instance = self._fake_instance(
+        instance = self._fake_instance_obj(
                 flavor=flavor, numa_topology=instance_topology)
         with self.tracker.instance_claim(self.context, instance):
             # <insert exciting things that utilize resources>
@@ -987,7 +890,7 @@ class InstanceClaimTestCase(BaseTrackerTestCase):
     @mock.patch('nova.objects.InstancePCIRequests.get_by_instance_uuid',
                 return_value=objects.InstancePCIRequests(requests=[]))
     def test_update_load_stats_for_instance(self, mock_get):
-        instance = self._fake_instance(task_state=task_states.SCHEDULING)
+        instance = self._fake_instance_obj(task_state=task_states.SCHEDULING)
         with self.tracker.instance_claim(self.context, instance):
             pass
 
@@ -1007,7 +910,7 @@ class InstanceClaimTestCase(BaseTrackerTestCase):
         self.assertEqual(0, self.tracker.compute_node['vcpus_used'])
 
         vcpus = 1
-        instance = self._fake_instance(vcpus=vcpus)
+        instance = self._fake_instance_obj(vcpus=vcpus)
 
         # should not do anything until a claim is made:
         self.tracker.update_usage(self.context, instance)
@@ -1024,7 +927,7 @@ class InstanceClaimTestCase(BaseTrackerTestCase):
 
         add_vcpus = 10
         vcpus += add_vcpus
-        instance = self._fake_instance(vcpus=add_vcpus)
+        instance = self._fake_instance_obj(vcpus=add_vcpus)
         with self.tracker.instance_claim(self.context, instance, limits):
             pass
         self.assertEqual(vcpus, self.tracker.compute_node['vcpus_used'])
@@ -1037,7 +940,7 @@ class InstanceClaimTestCase(BaseTrackerTestCase):
     def test_skip_deleted_instances(self):
         # ensure that the audit process skips instances that have vm_state
         # DELETED, but the DB record is not yet deleted.
-        self._fake_instance(vm_state=vm_states.DELETED, host=self.host)
+        self._fake_instance_obj(vm_state=vm_states.DELETED, host=self.host)
         self.tracker.update_available_resource(self.context)
 
         self.assertEqual(0, self.tracker.compute_node['memory_mb_used'])
@@ -1070,7 +973,7 @@ class _MoveClaimTestCase(BaseTrackerTestCase):
         self.stubs.Set(objects.Migration, 'create',
                        _fake_migration_create)
 
-        self.instance = self._fake_instance()
+        self.instance = self._fake_instance_obj()
         self.instance_type = self._fake_flavor_create()
         self.claim_method = self.tracker._move_claim
 
@@ -1133,7 +1036,7 @@ class _MoveClaimTestCase(BaseTrackerTestCase):
               2 * FAKE_VIRT_VCPUS)
         self.claim_method(
             self.context, self.instance, self.instance_type, limits=limits)
-        instance2 = self._fake_instance()
+        instance2 = self._fake_instance_obj()
         self.claim_method(
             self.context, instance2, self.instance_type, limits=limits)
 
@@ -1167,7 +1070,7 @@ class _MoveClaimTestCase(BaseTrackerTestCase):
                 id=11, name="destflavor", **dest_dict)
 
         # make an instance of src_type:
-        instance = self._fake_instance(flavor=src_type)
+        instance = self._fake_instance_obj(flavor=src_type)
         instance['system_metadata'] = self._fake_instance_system_metadata(
             dest_type)
         self.tracker.instance_claim(self.context, instance, self.limits)
@@ -1220,7 +1123,7 @@ class _MoveClaimTestCase(BaseTrackerTestCase):
         dest_tracker = self._tracker(host=dest)
         dest_tracker.update_available_resource(self.context)
 
-        self.instance = self._fake_instance(memory_mb=FAKE_VIRT_MEMORY_MB,
+        self.instance = self._fake_instance_obj(memory_mb=FAKE_VIRT_MEMORY_MB,
                 root_gb=FAKE_VIRT_LOCAL_GB, ephemeral_gb=0,
                 vcpus=FAKE_VIRT_VCPUS, instance_type_id=1)
 
@@ -1268,11 +1171,11 @@ class _MoveClaimTestCase(BaseTrackerTestCase):
         self._assert(FAKE_VIRT_VCPUS, 'vcpus_used')
 
     def test_resize_filter(self):
-        instance = self._fake_instance(vm_state=vm_states.ACTIVE,
+        instance = self._fake_instance_obj(vm_state=vm_states.ACTIVE,
                 task_state=task_states.SUSPENDING)
         self.assertFalse(self.tracker._instance_in_resize_state(instance))
 
-        instance = self._fake_instance(vm_state=vm_states.RESIZED,
+        instance = self._fake_instance_obj(vm_state=vm_states.RESIZED,
                 task_state=task_states.SUSPENDING)
         self.assertTrue(self.tracker._instance_in_resize_state(instance))
 
@@ -1280,13 +1183,13 @@ class _MoveClaimTestCase(BaseTrackerTestCase):
                   task_states.RESIZE_MIGRATED, task_states.RESIZE_FINISH]
         for vm_state in [vm_states.ACTIVE, vm_states.STOPPED]:
             for task_state in states:
-                instance = self._fake_instance(vm_state=vm_state,
+                instance = self._fake_instance_obj(vm_state=vm_state,
                                                task_state=task_state)
                 result = self.tracker._instance_in_resize_state(instance)
                 self.assertTrue(result)
 
     def test_dupe_filter(self):
-        instance = self._fake_instance(host=self.host)
+        instance = self._fake_instance_obj(host=self.host)
 
         values = {'source_compute': self.host, 'dest_compute': self.host,
                   'instance_uuid': instance['uuid'], 'new_instance_type_id': 2}
@@ -1326,7 +1229,7 @@ class NoInstanceTypesInSysMetadata(_MoveClaimTestCase):
     """
     def setUp(self):
         super(NoInstanceTypesInSysMetadata, self).setUp()
-        self.instance = self._fake_instance(stash=False)
+        self.instance = self._fake_instance_obj(stash=False)
 
     def test_get_instance_type_stash_false(self):
         with (mock.patch.object(objects.Flavor, 'get_by_id',
@@ -1362,7 +1265,7 @@ class OrphanTestCase(BaseTrackerTestCase):
 
     def test_find(self):
         # create one legit instance and verify the 2 orphans remain
-        self._fake_instance()
+        self._fake_instance_obj()
         orphans = self.tracker._find_orphaned_instances()
 
         self.assertEqual(2, len(orphans))
@@ -1486,7 +1389,7 @@ class StatsDictTestCase(BaseTrackerTestCase):
         self.assertEqual(FAKE_VIRT_STATS, stats)
 
         # adding an instance should keep virt driver stats
-        self._fake_instance(vm_state=vm_states.ACTIVE, host=self.host)
+        self._fake_instance_obj(vm_state=vm_states.ACTIVE, host=self.host)
         self.tracker.update_available_resource(self.context)
 
         stats = self._get_stats()
@@ -1520,7 +1423,7 @@ class StatsJsonTestCase(BaseTrackerTestCase):
 
         # adding an instance should keep virt driver stats
         # and add rt stats
-        self._fake_instance(vm_state=vm_states.ACTIVE, host=self.host)
+        self._fake_instance_obj(vm_state=vm_states.ACTIVE, host=self.host)
         self.tracker.update_available_resource(self.context)
 
         stats = self._get_stats()
