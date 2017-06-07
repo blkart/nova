@@ -372,13 +372,6 @@ class ResourceTracker(object):
         migrations = capi.migration_get_in_progress_by_host_and_node(context,
                 self.host, self.nodename)
 
-        # Only look at resize/migrate migration records
-        # NOTE(danms): RT should probably examine live migration
-        # records as well and do something smart. However, ignore
-        # those for now to avoid them being included in below calculations.
-        migrations = [migration for migration in migrations
-                      if migration.migration_type in ('resize', 'migrate')]
-
         self._update_usage_from_migrations(context, resources, migrations)
 
         # Detect and account for orphaned instances that may exist on the
@@ -574,11 +567,21 @@ class ResourceTracker(object):
                 resources, usage, free)
         resources['numa_topology'] = updated_numa_topology
 
+    def _is_trackable_migration(self, migration):
+        # Only look at resize/migrate migration records
+        # NOTE(danms): RT should probably examine live migration
+        # records as well and do something smart. However, ignore
+        # those for now to avoid them being included in below calculations.
+        return migration.migration_type in ('resize', 'migration')
+
     def _update_usage_from_migration(self, context, instance, image_meta,
                                      resources, migration):
         """Update usage for a single migration.  The record may
         represent an incoming or outbound migration.
         """
+        if not self._is_trackable_migration(migration):
+            return
+
         uuid = migration['instance_uuid']
         LOG.audit(_("Updating from migration %s") % uuid)
 
