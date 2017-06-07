@@ -276,6 +276,8 @@ class ComputeAPI(object):
         can handle the version_cap being set to 3.35.
 
         * 3.36  - Add migration argument to live_migration()
+        * 3.37  - Add migration, scheduler_node and limits arguments to
+                  rebuild_instance()
     '''
 
     VERSION_ALIASES = {
@@ -587,12 +589,21 @@ class ComputeAPI(object):
 
     def rebuild_instance(self, ctxt, instance, new_pass, injected_files,
             image_ref, orig_image_ref, orig_sys_metadata, bdms,
-            recreate=False, on_shared_storage=False, host=None,
-            preserve_ephemeral=False, kwargs=None):
+            recreate=False, on_shared_storage=False, host=None, node=None,
+            preserve_ephemeral=False, migration=None, limits=None,
+            kwargs=None):
         # NOTE(danms): kwargs is only here for cells compatibility, don't
         # actually send it to compute
-        extra = {'preserve_ephemeral': preserve_ephemeral}
-        version = '3.21'
+        extra = {'preserve_ephemeral': preserve_ephemeral,
+                 'migration': migration,
+                 'scheduled_node': node,
+                 'limits': limits}
+        version = '3.27'
+        if not self.client.can_send_version(version):
+            version = '4.0'
+            extra.pop('migration')
+            extra.pop('scheduled_node')
+            extra.pop('limits')
         cctxt = self.client.prepare(server=_compute_host(host, instance),
                 version=version)
         cctxt.cast(ctxt, 'rebuild_instance',

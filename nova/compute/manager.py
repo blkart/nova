@@ -46,6 +46,7 @@ from nova import block_device
 from nova.cells import rpcapi as cells_rpcapi
 from nova.cloudpipe import pipelib
 from nova import compute
+from nova.compute import claims
 from nova.compute import flavors
 from nova.compute import power_state
 from nova.compute import resource_tracker
@@ -591,7 +592,7 @@ class ComputeVirtAPI(virtapi.VirtAPI):
 class ComputeManager(manager.Manager):
     """Manages the running instances from creation to destruction."""
 
-    target = messaging.Target(version='3.36')
+    target = messaging.Target(version='3.37')
 
     # How long to wait in seconds before re-issuing a shutdown
     # signal to a instance during power off.  The overall
@@ -2740,7 +2741,8 @@ class ComputeManager(manager.Manager):
     def rebuild_instance(self, context, instance, orig_image_ref, image_ref,
                          injected_files, new_pass, orig_sys_metadata,
                          bdms, recreate, on_shared_storage,
-                         preserve_ephemeral=False):
+                         preserve_ephemeral=False, migration=None,
+                         scheduled_node=None, limits=None):
         """Destroy and re-make this instance.
 
         A 'rebuild' effectively purges all existing data from the system and
@@ -2760,8 +2762,98 @@ class ComputeManager(manager.Manager):
         :param on_shared_storage: True if instance files on shared storage
         :param preserve_ephemeral: True if the default ephemeral storage
                                    partition must be preserved on rebuild
+        :param migration: a Migration object if one was created for this
+                          rebuild operation (if it's a part of evacaute)
+        :param scheduled_node: A node of the host chosen by the scheduler. If a
+                               host was specified by the user, this will be
+                               None
+        :param limits: Overcommit limits set by the scheduler. If a host was
+                       specified by the user, this will be None
         """
         context = context.elevated()
+
+        LOG.audit(_("Rebuilding instance"), context=context,
+                  instance=instance)
+        if scheduled_node is not None:
+            rt = self._get_resource_tracker(scheduled_node)
+            rebuild_claim = rt.rebuild_claim
+        else:
+            rebuild_claim = claims.NopClaim
+
+        image_meta = {}
+        if image_ref:
+            image_meta = self.image_api.get(context, image_ref)
+
+        # NOTE(mriedem): On a recreate (evacuate), we need to update
+        # the instance's host and node properties to reflect it's
+        # destination node for the recreate.
+        if not scheduled_node:
+            try:
+                compute_node = self._get_compute_info(context, self.host)
+                scheduled_node = compute_node.hypervisor_hostname
+            except exception.ComputeHostNotFound:
+                LOG.exception(_LE('Failed to get compute_info for %s'),
+                                self.host)
+
+        def _fail_migration(migration):
+            if migration:
+                migration.status = 'failed'
+                migration.save()
+
+        with self._error_out_instance_on_exception(context, instance):
+            try:
+                claim_ctxt = rebuild_claim(
+                    context, instance, limits=limits, image_meta=image_meta,
+                    migration=migration)
+                self._do_rebuild_instance_with_claim(
+                    claim_ctxt, context, instance, orig_image_ref,
+                    image_ref, injected_files, new_pass, orig_sys_metadata,
+                    bdms, recreate, on_shared_storage, preserve_ephemeral)
+            except exception.ComputeResourcesUnavailable as e:
+                LOG.debug("Could not rebuild instance on this host, not "
+                          "enough resources available.", instance=instance)
+
+                # NOTE(ndipanov): We just abort the build for now and leave a
+                # migration record for potential cleanup later
+                _fail_migration(migration)
+
+                self._notify_about_instance_usage(context, instance,
+                        'rebuild.error', fault=e)
+                raise exception.BuildAbortException(
+                    instance_uuid=instance.uuid, reason=e.format_message())
+            except Exception as e:
+                _fail_migration(migration)
+                self._notify_about_instance_usage(context, instance,
+                        'rebuild.error', fault=e)
+                raise
+            else:
+                instance.apply_migration_context()
+                # NOTE (ndipanov): This save will now update the host and node
+                # attributes making sure that next RT pass is consistent since
+                # it will be based on the instance and not the migration DB
+                # entry.
+                instance.host = self.host
+                instance.node = scheduled_node
+                instance.save()
+                instance.drop_migration_context()
+
+                # NOTE (ndipanov): Mark the migration as done only after we
+                # mark the instance as belonging to this host.
+                if migration:
+                    migration.status = 'done'
+                    migration.save()
+
+    def _do_rebuild_instance_with_claim(self, claim_context, *args, **kwargs):
+        """Helper to avoid deep nesting in the top-level method."""
+
+        with claim_context:
+            self._do_rebuild_instance(*args, **kwargs)
+
+    def _do_rebuild_instance(self, context, instance, orig_image_ref,
+                             image_ref, injected_files, new_pass,
+                             orig_sys_metadata, bdms, recreate,
+                             on_shared_storage, preserve_ephemeral):
+        orig_vm_state = instance.vm_state
         # NOTE (ndipanov): If we get non-object BDMs, just get them from the
         # db again, as this means they are sent in the old format and we want
         # to avoid converting them back when we can just get them.
@@ -2770,139 +2862,118 @@ class ComputeManager(manager.Manager):
             any(not isinstance(bdm, obj_base.NovaObject)
                 for bdm in bdms)):
             bdms = None
+        if recreate:
+            if not self.driver.capabilities["supports_recreate"]:
+                raise exception.InstanceRecreateNotSupported
 
-        orig_vm_state = instance.vm_state
-        with self._error_out_instance_on_exception(context, instance):
-            LOG.audit(_("Rebuilding instance"), context=context,
-                      instance=instance)
+            self._check_instance_exists(context, instance)
 
-            if recreate:
-                if not self.driver.capabilities["supports_recreate"]:
-                    raise exception.InstanceRecreateNotSupported
+            # To cover case when admin expects that instance files are on
+            # shared storage, but not accessible and vice versa
+            if on_shared_storage != self.driver.instance_on_disk(instance):
+                raise exception.InvalidSharedStorage(
+                        _("Invalid state of instance files on shared"
+                          " storage"))
 
-                self._check_instance_exists(context, instance)
-
-                # To cover case when admin expects that instance files are on
-                # shared storage, but not accessible and vice versa
-                if on_shared_storage != self.driver.instance_on_disk(instance):
-                    raise exception.InvalidSharedStorage(
-                            _("Invalid state of instance files on shared"
-                              " storage"))
-
-                if on_shared_storage:
-                    LOG.info(_('disk on shared storage, recreating using'
-                               ' existing disk'))
-                else:
-                    image_ref = orig_image_ref = instance.image_ref
-                    LOG.info(_("disk not on shared storage, rebuilding from:"
-                               " '%s'") % str(image_ref))
-
-                # NOTE(mriedem): On a recreate (evacuate), we need to update
-                # the instance's host and node properties to reflect it's
-                # destination node for the recreate.
-                node_name = None
-                try:
-                    compute_node = self._get_compute_info(context, self.host)
-                    node_name = compute_node.hypervisor_hostname
-                except exception.NotFound:
-                    LOG.exception(_LE('Failed to get compute_info for %s'),
-                                  self.host)
-                finally:
-                    instance.host = self.host
-                    instance.node = node_name
-                    instance.save()
-
-            if image_ref:
-                image_meta = self.image_api.get(context, image_ref)
+            if on_shared_storage:
+                LOG.info(_('disk on shared storage, recreating using'
+                           ' existing disk'))
             else:
-                image_meta = {}
+                image_ref = orig_image_ref = instance.image_ref
+                LOG.info(_("disk not on shared storage, rebuilding from:"
+                           " '%s'") % str(image_ref))
 
-            # This instance.exists message should contain the original
-            # image_ref, not the new one.  Since the DB has been updated
-            # to point to the new one... we have to override it.
-            # TODO(jaypipes): Move generate_image_url() into the nova.image.api
-            orig_image_ref_url = glance.generate_image_url(orig_image_ref)
-            extra_usage_info = {'image_ref_url': orig_image_ref_url}
-            self.conductor_api.notify_usage_exists(context,
-                    obj_base.obj_to_primitive(instance),
-                    current_period=True, system_metadata=orig_sys_metadata,
-                    extra_usage_info=extra_usage_info)
+        if image_ref:
+            image_meta = self.image_api.get(context, image_ref)
+        else:
+            image_meta = {}
 
-            # This message should contain the new image_ref
-            extra_usage_info = {'image_name': image_meta.get('name', '')}
-            self._notify_about_instance_usage(context, instance,
-                    "rebuild.start", extra_usage_info=extra_usage_info)
+        # This instance.exists message should contain the original
+        # image_ref, not the new one.  Since the DB has been updated
+        # to point to the new one... we have to override it.
+        # TODO(jaypipes): Move generate_image_url() into the nova.image.api
+        orig_image_ref_url = glance.generate_image_url(orig_image_ref)
+        extra_usage_info = {'image_ref_url': orig_image_ref_url}
+        self.conductor_api.notify_usage_exists(context,
+                obj_base.obj_to_primitive(instance),
+                current_period=True, system_metadata=orig_sys_metadata,
+                extra_usage_info=extra_usage_info)
 
-            instance.power_state = self._get_power_state(context, instance)
-            instance.task_state = task_states.REBUILDING
-            instance.save(expected_task_state=[task_states.REBUILDING])
+        # This message should contain the new image_ref
+        extra_usage_info = {'image_name': image_meta.get('name', '')}
+        self._notify_about_instance_usage(context, instance,
+                "rebuild.start", extra_usage_info=extra_usage_info)
 
-            if recreate:
-                # Needed for nova-network, does nothing for neutron
-                self.network_api.setup_networks_on_host(
-                        context, instance, self.host)
-                # For nova-network this is needed to move floating IPs
-                # For neutron this updates the host in the port binding
-                # TODO(cfriesen): this network_api call and the one above
-                # are so similar, we should really try to unify them.
-                self.network_api.setup_instance_network_on_host(
-                        context, instance, self.host)
+        instance.power_state = self._get_power_state(context, instance)
+        instance.task_state = task_states.REBUILDING
+        instance.save(expected_task_state=[task_states.REBUILDING])
 
-            network_info = compute_utils.get_nw_info_for_instance(instance)
-            if bdms is None:
-                bdms = objects.BlockDeviceMappingList.get_by_instance_uuid(
-                        context, instance.uuid)
+        if recreate:
+            # Needed for nova-network, does nothing for neutron
+            self.network_api.setup_networks_on_host(
+                    context, instance, self.host)
+            # For nova-network this is needed to move floating IPs
+            # For neutron this updates the host in the port binding
+            # TODO(cfriesen): this network_api call and the one above
+            # are so similar, we should really try to unify them.
+            self.network_api.setup_instance_network_on_host(
+                    context, instance, self.host)
 
-            block_device_info = \
-                self._get_instance_block_device_info(
-                        context, instance, bdms=bdms)
+        network_info = compute_utils.get_nw_info_for_instance(instance)
+        if bdms is None:
+            bdms = objects.BlockDeviceMappingList.get_by_instance_uuid(
+                    context, instance.uuid)
 
-            def detach_block_devices(context, bdms):
-                for bdm in bdms:
-                    if bdm.is_volume:
-                        self._detach_volume(context, bdm.volume_id, instance,
-                                            destroy_bdm=False)
+        block_device_info = \
+            self._get_instance_block_device_info(
+                    context, instance, bdms=bdms)
 
-            files = self._decode_files(injected_files)
+        def detach_block_devices(context, bdms):
+            for bdm in bdms:
+                if bdm.is_volume:
+                    self._detach_volume(context, bdm.volume_id, instance,
+                                        destroy_bdm=False)
 
-            kwargs = dict(
-                context=context,
-                instance=instance,
-                image_meta=image_meta,
-                injected_files=files,
-                admin_password=new_pass,
-                bdms=bdms,
-                detach_block_devices=detach_block_devices,
-                attach_block_devices=self._prep_block_device,
-                block_device_info=block_device_info,
-                network_info=network_info,
-                preserve_ephemeral=preserve_ephemeral,
-                recreate=recreate)
-            try:
-                self.driver.rebuild(**kwargs)
-            except NotImplementedError:
-                # NOTE(rpodolyaka): driver doesn't provide specialized version
-                # of rebuild, fall back to the default implementation
-                self._rebuild_default_impl(**kwargs)
-            instance.power_state = self._get_power_state(context, instance)
+        files = self._decode_files(injected_files)
+
+        kwargs = dict(
+            context=context,
+            instance=instance,
+            image_meta=image_meta,
+            injected_files=files,
+            admin_password=new_pass,
+            bdms=bdms,
+            detach_block_devices=detach_block_devices,
+            attach_block_devices=self._prep_block_device,
+            block_device_info=block_device_info,
+            network_info=network_info,
+            preserve_ephemeral=preserve_ephemeral,
+            recreate=recreate)
+        try:
+            self.driver.rebuild(**kwargs)
+        except NotImplementedError:
+            # NOTE(rpodolyaka): driver doesn't provide specialized version
+            # of rebuild, fall back to the default implementation
+            self._rebuild_default_impl(**kwargs)
+        instance.power_state = self._get_power_state(context, instance)
+        instance.vm_state = vm_states.ACTIVE
+        instance.task_state = None
+        instance.launched_at = timeutils.utcnow()
+        instance.save(expected_task_state=[task_states.REBUILD_SPAWNING])
+
+        if orig_vm_state == vm_states.STOPPED:
+            LOG.info(_LI("bringing vm to original state: '%s'"),
+                     orig_vm_state, instance=instance)
             instance.vm_state = vm_states.ACTIVE
-            instance.task_state = None
-            instance.launched_at = timeutils.utcnow()
-            instance.save(expected_task_state=[task_states.REBUILD_SPAWNING])
+            instance.task_state = task_states.POWERING_OFF
+            instance.progress = 0
+            instance.save()
+            self.stop_instance(context, instance)
 
-            if orig_vm_state == vm_states.STOPPED:
-                LOG.info(_LI("bringing vm to original state: '%s'"),
-                         orig_vm_state, instance=instance)
-                instance.vm_state = vm_states.ACTIVE
-                instance.task_state = task_states.POWERING_OFF
-                instance.progress = 0
-                instance.save()
-                self.stop_instance(context, instance)
-
-            self._notify_about_instance_usage(
-                    context, instance, "rebuild.end",
-                    network_info=network_info,
-                    extra_usage_info=extra_usage_info)
+        self._notify_about_instance_usage(
+                context, instance, "rebuild.end",
+                network_info=network_info,
+                extra_usage_info=extra_usage_info)
 
     def _handle_bad_volumes_detached(self, context, instance, bad_devices,
                                      block_device_info):

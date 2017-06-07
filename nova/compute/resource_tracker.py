@@ -143,6 +143,15 @@ class ResourceTracker(object):
         return claim
 
     @utils.synchronized(COMPUTE_RESOURCE_SEMAPHORE)
+    def rebuild_claim(self, context, instance, limits=None, image_meta=None,
+                      migration=None):
+        """Create a claim for a rebuild operation."""
+        instance_type = instance.flavor
+        return self._move_claim(context, instance, instance_type,
+                                move_type='evacuation', limits=limits,
+                                image_meta=image_meta, migration=migration)
+
+    @utils.synchronized(COMPUTE_RESOURCE_SEMAPHORE)
     def resize_claim(self, context, instance, instance_type,
                      image_meta=None, limits=None):
         """Create a claim for a resize or cold-migration move."""
@@ -161,7 +170,7 @@ class ResourceTracker(object):
         :param new_instance_type: new instance_type being resized to
         :param image_meta: instance image metadata
         :param move_type: move type - can be one of 'migration', 'resize',
-                         'live-migration', 'evacuate'
+                         'live-migration', 'evacuation'
         :param limits: Dict of oversubscription limits for memory, disk,
         and CPUs
         :param migration: A migration object if one was already created
