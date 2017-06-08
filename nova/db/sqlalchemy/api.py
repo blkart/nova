@@ -2487,7 +2487,7 @@ def instance_extra_get_by_instance_uuid(context, instance_uuid,
     query = _instance_extra_get_by_instance_uuid_query(
         context, instance_uuid)
     if columns is None:
-        columns = ['numa_topology', 'pci_requests']
+        columns = ['numa_topology', 'pci_requests', 'migration_context']
     for column in columns:
         query = query.options(undefer(column))
     instance_extra = query.first()

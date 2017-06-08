@@ -333,6 +333,7 @@ class InstanceExtra(BASE, NovaBase):
                            nullable=False)
     numa_topology = Column(Text)
     pci_requests = Column(Text)
+    migration_context = Column(Text)
     instance = orm.relationship(Instance,
                             backref=orm.backref('numa_topology',
                                                 uselist=False),
