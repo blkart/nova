@@ -44,6 +44,7 @@ def register_all():
     __import__('nova.objects.instance_pci_requests')
     __import__('nova.objects.keypair')
     __import__('nova.objects.migration')
+    __import__('nova.objects.migration_context')
     __import__('nova.objects.network')
     __import__('nova.objects.network_request')
     __import__('nova.objects.pci_device')

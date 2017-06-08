@@ -969,6 +969,7 @@ object_data = {
     'KeyPair': '1.1-3410f51950d052d861c11946a6ae621a',
     'KeyPairList': '1.0-71132a568cc5d078ba1748a9c02c87b8',
     'Migration': '1.1-67c47726c2c71422058cd9d149d6d3ed',
+    'MigrationContext': '1.0-d8c2f10069e410f639c49082b5932c92',
     'MigrationList': '1.1-8c5f678edc72a592d591a13b35e54353',
     'MyObj': '1.6-55bfc22259fd3df239e4a49fa3552c93',
     'MyOwnedObject': '1.0-0f3d6c028543d7f3715d121db5b8e298',
