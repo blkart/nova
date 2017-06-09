@@ -17,7 +17,7 @@ from nova.cells import rpcapi as cells_rpcapi
 from nova.compute import flavors
 from nova import db
 from nova import exception
-from nova.i18n import _LE
+from nova.i18n import _LE, _LW
 from nova import notifications
 from nova import objects
 from nova.objects import base
@@ -40,7 +40,7 @@ _INSTANCE_OPTIONAL_JOINED_FIELDS = ['metadata', 'system_metadata',
 # These are fields that are optional but don't translate to db columns
 _INSTANCE_OPTIONAL_NON_COLUMN_FIELDS = ['fault']
 # These are fields that are optional and in instance_extra
-_INSTANCE_EXTRA_FIELDS = ['numa_topology']
+_INSTANCE_EXTRA_FIELDS = ['numa_topology', 'migration_context']
 
 # These are fields that can be specified as expected_attrs
 INSTANCE_OPTIONAL_ATTRS = (_INSTANCE_OPTIONAL_JOINED_FIELDS +
@@ -66,6 +66,9 @@ def _expected_cols(expected_attrs):
     return simple_cols + complex_cols
 
 
+_NO_DATA_SENTINEL = object()
+
+
 class Instance(base.NovaPersistentObject, base.NovaObject):
     # Version 1.0: Initial version
     # Version 1.1: Added info_cache
@@ -84,7 +87,8 @@ class Instance(base.NovaPersistentObject, base.NovaObject):
     # Version 1.13: Added delete_metadata_key()
     # Version 1.14: Added numa_topology
     # Version 1.15: PciDeviceList 1.1
-    VERSION = '1.15'
+    # Version 1.16: Added migration_context
+    VERSION = '1.16'
 
     fields = {
         'id': fields.IntegerField(),
@@ -171,7 +175,9 @@ class Instance(base.NovaPersistentObject, base.NovaObject):
 
         'pci_devices': fields.ObjectField('PciDeviceList', nullable=True),
         'numa_topology': fields.ObjectField('InstanceNUMATopology',
-                                            nullable=True)
+                                            nullable=True),
+        'migration_context': fields.ObjectField('MigrationContext',
+                                                nullable=True),
         }
 
     obj_extra_fields = ['name']
@@ -297,7 +303,12 @@ class Instance(base.NovaPersistentObject, base.NovaObject):
         if 'numa_topology' in expected_attrs:
             instance._load_numa_topology(
                 db_inst.get('extra').get('numa_topology'))
-
+        if 'migration_context' in expected_attrs:
+            if have_extra:
+                instance._load_migration_context(
+                    db_inst['extra'].get('migration_context'))
+            else:
+                instance.migration_context = None
         if 'info_cache' in expected_attrs:
             if db_inst['info_cache'] is None:
                 instance.info_cache = None
@@ -415,6 +426,14 @@ class Instance(base.NovaPersistentObject, base.NovaObject):
         # permitted to update the DB. all change to devices from here will
         # be dropped.
         pass
+
+    def _save_migration_context(self, context):
+        if self.migration_context:
+            self.migration_context.instance_uuid = self.uuid
+            with self.migration_context.obj_alternate_context(context):
+                self.migration_context._save()
+        else:
+            objects.MigrationContext._destroy(context, self.uuid)
 
     @base.remotable
     def save(self, context, expected_vm_state=None,
@@ -583,6 +602,42 @@ class Instance(base.NovaPersistentObject, base.NovaObject):
                 objects.InstancePCIRequests.get_by_instance_uuid(
                     self._context, self.uuid)
 
+    def _load_migration_context(self, db_context=_NO_DATA_SENTINEL):
+        if db_context is _NO_DATA_SENTINEL:
+            try:
+                self.migration_context = (
+                    objects.MigrationContext.get_by_instance_uuid(
+                        self._context, self.uuid))
+            except exception.MigrationContextNotFound:
+                self.migration_context = None
+        elif db_context is None:
+            self.migration_context = None
+        else:
+            self.migration_context = objects.MigrationContext.obj_from_db_obj(
+                db_context)
+
+    def apply_migration_context(self):
+        if self.migration_context:
+            self.numa_topology = self.migration_context.new_numa_topology
+        else:
+            LOG.warn(_LW("Trying to apply a migration context that does not "
+                         "seem to be set for this instance"),
+                         instance=self)
+
+    def revert_migration_context(self):
+        if self.migration_context:
+            self.numa_topology = self.migration_context.old_numa_topology
+        else:
+            LOG.warn(_LW("Trying to revert a migration context that does not "
+                         "seem to be set for this instance"),
+                         instance=self)
+
+    @base.remotable
+    def drop_migration_context(self, context):
+        if self.migration_context:
+            objects.MigrationContext._destroy(context, self.uuid)
+            self.migration_context = None
+
     def obj_load_attr(self, attrname):
         if attrname not in INSTANCE_OPTIONAL_ATTRS:
             raise exception.ObjectActionError(
@@ -604,6 +659,8 @@ class Instance(base.NovaPersistentObject, base.NovaObject):
             self._load_fault()
         elif attrname == 'numa_topology':
             self._load_numa_topology()
+        elif attrname == 'migration_context':
+            self._load_migration_context()
         else:
             self._load_generic(attrname)
         self.obj_reset_changes([attrname])
@@ -685,7 +742,8 @@ class InstanceList(base.ObjectListBase, base.NovaObject):
     # Version 1.7: Added use_slave to get_active_by_window_joined
     # Version 1.8: Instance <= version 1.14
     # Version 1.9: Instance <= version 1.15
-    VERSION = '1.9'
+    # Version 1.10: Instance <= version 1.16
+    VERSION = '1.10'
 
     fields = {
         'objects': fields.ListOfObjectsField('Instance'),
@@ -701,6 +759,7 @@ class InstanceList(base.ObjectListBase, base.NovaObject):
         '1.7': '1.13',
         '1.8': '1.14',
         '1.9': '1.15',
+        '1.10': '1.16',
         }
 
     @base.remotable_classmethod

@@ -38,6 +38,7 @@ from nova.tests import fake_instance
 from nova.tests.objects import test_instance_fault
 from nova.tests.objects import test_instance_info_cache
 from nova.tests.objects import test_instance_numa_topology
+from nova.tests.objects import test_migration_context as test_mig_ctxt
 from nova.tests.objects import test_objects
 from nova.tests.objects import test_security_group
 from nova import utils
@@ -191,6 +192,61 @@ class _TestInstanceObject(object):
         inst = instance.Instance(context=self.context, uuid='fake-uuid')
         self.assertRaises(exception.ObjectActionError,
                           inst.obj_load_attr, 'foo')
+
+    def test_load_migration_context(self):
+        inst = instance.Instance(context=self.context,
+                                 uuid='fake-uuid')
+        with mock.patch.object(
+                objects.MigrationContext, 'get_by_instance_uuid',
+                return_value=test_mig_ctxt.fake_migration_context_obj
+        ) as mock_get:
+            inst.migration_context
+            mock_get.assert_called_once_with(self.context, inst.uuid)
+
+    def test_load_migration_context_no_context(self):
+        inst = instance.Instance(context=self.context,
+                                 uuid='fake-uuid')
+        with mock.patch.object(
+                objects.MigrationContext, 'get_by_instance_uuid',
+            side_effect=exception.MigrationContextNotFound(
+                instance_uuid=inst.uuid)
+        ) as mock_get:
+            mig_ctxt = inst.migration_context
+            mock_get.assert_called_once_with(self.context, inst.uuid)
+            self.assertIsNone(mig_ctxt)
+
+    def test_load_migration_context_no_data(self):
+        inst = instance.Instance(context=self.context,
+                                 uuid='fake-uuid')
+        with mock.patch.object(
+                objects.MigrationContext, 'get_by_instance_uuid') as mock_get:
+            loaded_ctxt = inst._load_migration_context(db_context=None)
+            self.assertFalse(mock_get.called)
+            self.assertIsNone(loaded_ctxt)
+
+    def test_apply_revert_migration_context(self):
+        inst = instance.Instance(context=self.context,
+                                 uuid='fake-uuid', numa_topology=None)
+        inst.migration_context = test_mig_ctxt.get_fake_migration_context_obj(
+            self.context)
+        inst.apply_migration_context()
+        self.assertIsInstance(inst.numa_topology, objects.InstanceNUMATopology)
+        inst.revert_migration_context()
+        self.assertIsNone(inst.numa_topology)
+
+    def test_drop_migration_context(self):
+        inst = instance.Instance(context=self.context,
+                                 uuid='fake-uuid')
+        inst.migration_context = test_mig_ctxt.get_fake_migration_context_obj(
+            self.context)
+        inst.migration_context.instance_uuid = inst.uuid
+        inst.migration_context.id = 7
+        with mock.patch(
+                'nova.db.instance_extra_update_by_uuid') as update_extra:
+            inst.drop_migration_context()
+            self.assertIsNone(inst.migration_context)
+            update_extra.assert_called_once_with(self.context, inst.uuid,
+                                                 {"migration_context": None})
 
     def test_get_remote(self):
         # isotime doesn't have microseconds and is always UTC
@@ -357,6 +413,28 @@ class _TestInstanceObject(object):
 
     def test_save_exp_task_state_api_cell_admin_reset(self):
         self._save_test_helper('api', {'admin_state_reset': True})
+
+    @mock.patch('nova.db.instance_extra_update_by_uuid')
+    def test_save_migration_context_model(self, mock_update):
+        inst = fake_instance.fake_instance_obj(self.context)
+        inst.migration_context = test_mig_ctxt.get_fake_migration_context_obj(
+            self.context)
+        inst.save()
+        self.assertTrue(mock_update.called)
+        self.assertEqual(mock_update.call_count, 1)
+        actual_args = mock_update.call_args
+        self.assertEqual(self.context, actual_args[0][0])
+        self.assertEqual(inst.uuid, actual_args[0][1])
+        self.assertEqual(list(actual_args[0][2].keys()), ['migration_context'])
+        self.assertIsInstance(
+            objects.MigrationContext.obj_from_db_obj(
+                actual_args[0][2]['migration_context']),
+            objects.MigrationContext)
+        mock_update.reset_mock()
+        inst.migration_context = None
+        inst.save()
+        mock_update.assert_called_once_with(
+            self.context, inst.uuid, {'migration_context': None})
 
     def test_save_rename_sends_notification(self):
         # Tests that simply changing the 'display_name' on the instance

@@ -28,7 +28,8 @@ class FloatingIP(obj_base.NovaPersistentObject, obj_base.NovaObject):
     # Version 1.2: FixedIP <= version 1.2
     # Version 1.3: FixedIP <= version 1.3
     # Version 1.4: FixedIP <= version 1.4
-    VERSION = '1.4'
+    # Version 1.5: FixedIP <= version 1.5
+    VERSION = '1.5'
     fields = {
         'id': fields.IntegerField(),
         'address': fields.IPAddressField(),
@@ -173,6 +174,7 @@ class FloatingIPList(obj_base.ObjectListBase, obj_base.NovaObject):
     # Version 1.3: FloatingIP 1.2
     # Version 1.4: FloatingIP 1.3
     # Version 1.5: FloatingIP 1.4
+    # Version 1.6: FloatingIP 1.5
     fields = {
         'objects': fields.ListOfObjectsField('FloatingIP'),
         }
@@ -183,8 +185,9 @@ class FloatingIPList(obj_base.ObjectListBase, obj_base.NovaObject):
         '1.3': '1.2',
         '1.4': '1.3',
         '1.5': '1.4',
+        '1.6': '1.5',
         }
-    VERSION = '1.5'
+    VERSION = '1.6'
 
     @obj_base.remotable_classmethod
     def get_all(cls, context):

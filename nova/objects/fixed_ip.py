@@ -30,7 +30,8 @@ class FixedIP(obj_base.NovaPersistentObject, obj_base.NovaObject):
     # Version 1.2: Instance version 1.14
     # Version 1.3: Instance 1.15
     # Version 1.4: Added default_route field
-    VERSION = '1.4'
+    # Version 1.5: Added default_route field
+    VERSION = '1.5'
 
     fields = {
         'id': fields.IntegerField(),
@@ -185,7 +186,8 @@ class FixedIPList(obj_base.ObjectListBase, obj_base.NovaObject):
     # Version 1.2: FixedIP <= version 1.2
     # Version 1.3: FixedIP <= version 1.3
     # Version 1.4: FixedIP <= version 1.4
-    VERSION = '1.4'
+    # Version 1.5: FixedIP <= version 1.5
+    VERSION = '1.5'
 
     fields = {
         'objects': fields.ListOfObjectsField('FixedIP'),
@@ -196,6 +198,7 @@ class FixedIPList(obj_base.ObjectListBase, obj_base.NovaObject):
         '1.2': '1.2',
         '1.3': '1.3',
         '1.4': '1.4',
+        '1.5': '1.5',
         }
 
     @obj_base.remotable_classmethod
