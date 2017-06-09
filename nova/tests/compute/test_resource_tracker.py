@@ -1011,9 +1011,10 @@ class _MoveClaimTestCase(BaseTrackerTestCase):
         self._assert(FAKE_VIRT_VCPUS, 'vcpus_used')
         self.assertEqual(1, len(self.tracker.tracked_migrations))
 
+    @mock.patch('nova.objects.Instance.save')
     @mock.patch('nova.objects.InstancePCIRequests.get_by_instance_uuid',
                 return_value=objects.InstancePCIRequests(requests=[]))
-    def test_abort(self, mock_get):
+    def test_abort(self, mock_get, mock_save):
         try:
             with self.claim_method(self.context, self.instance,
                     self.instance_type, limits=self.limits):
@@ -1025,10 +1026,12 @@ class _MoveClaimTestCase(BaseTrackerTestCase):
         self._assert(0, 'local_gb_used')
         self._assert(0, 'vcpus_used')
         self.assertEqual(0, len(self.tracker.tracked_migrations))
+        mock_save.assert_called_once_with()
 
+    @mock.patch('nova.objects.Instance.save')
     @mock.patch('nova.objects.InstancePCIRequests.get_by_instance_uuid',
                 return_value=objects.InstancePCIRequests(requests=[]))
-    def test_additive_claims(self, mock_get):
+    def test_additive_claims(self, mock_get, mock_save):
 
         limits = self._limits(
               2 * FAKE_VIRT_MEMORY_WITH_OVERHEAD,
@@ -1036,9 +1039,12 @@ class _MoveClaimTestCase(BaseTrackerTestCase):
               2 * FAKE_VIRT_VCPUS)
         self.claim_method(
             self.context, self.instance, self.instance_type, limits=limits)
+        mock_save.assert_called_once_with()
+        mock_save.reset_mock()
         instance2 = self._fake_instance_obj()
         self.claim_method(
             self.context, instance2, self.instance_type, limits=limits)
+        mock_save.assert_called_once_with()
 
         self._assert(2 * FAKE_VIRT_MEMORY_WITH_OVERHEAD, 'memory_mb_used')
         self._assert(2 * FAKE_VIRT_LOCAL_GB, 'local_gb_used')
@@ -1098,12 +1104,14 @@ class _MoveClaimTestCase(BaseTrackerTestCase):
         self.assertEqual(1, len(self.tracker.tracked_instances))
         self.assertEqual(0, len(self.tracker.tracked_migrations))
 
+    @mock.patch('nova.objects.Instance.save')
     @mock.patch('nova.objects.InstancePCIRequests.get_by_instance_uuid',
                 return_value=objects.InstancePCIRequests(requests=[]))
-    def test_revert(self, mock_get):
+    def test_revert(self, mock_get, mock_save):
         self.claim_method(
             self.context, self.instance, self.instance_type,
             image_meta={}, limits=self.limits)
+        mock_save.assert_called_once_with()
         self.tracker.drop_move_claim(self.context, self.instance)
 
         self.assertEqual(0, len(self.tracker.tracked_instances))
@@ -1170,11 +1178,13 @@ class _MoveClaimTestCase(BaseTrackerTestCase):
         self._assert(FAKE_VIRT_LOCAL_GB, 'local_gb_used')
         self._assert(FAKE_VIRT_VCPUS, 'vcpus_used')
 
+    @mock.patch('nova.objects.Instance.save')
     @mock.patch('nova.objects.InstancePCIRequests.get_by_instance_uuid',
                 return_value=objects.InstancePCIRequests(requests=[]))
-    def test_move_type_not_tracked(self, mock_get):
+    def test_move_type_not_tracked(self, mock_get, mock_save):
         self.claim_method(self.context, self.instance,
                 self.instance_type, limits=self.limits, move_type="evacuation")
+        mock_save.assert_called_once_with()
 
         self._assert(0, 'memory_mb_used')
         self._assert(0, 'local_gb_used')
@@ -1227,9 +1237,10 @@ class _MoveClaimTestCase(BaseTrackerTestCase):
         self.assertEqual('fakehost', instance['launched_on'])
         self.assertEqual('fakenode', instance['node'])
 
+    @mock.patch('nova.objects.Instance.save')
     @mock.patch.object(objects.Migration, 'save')
-    def test_existing_migration(self, save_mock):
-        migration = objects.Migration(self.context,
+    def test_existing_migration(self, save_mock, save_inst_mock):
+        migration = objects.Migration(self.context, id=42,
                                       instance_uuid=self.instance.uuid,
                                       status='accepted',
                                       migration_type='evacuation')
@@ -1240,6 +1251,7 @@ class _MoveClaimTestCase(BaseTrackerTestCase):
         self.assertEqual("pre-migrating", migration.status)
         self.assertEqual(0, len(self.tracker.tracked_migrations))
         save_mock.assert_called_once_with()
+        save_inst_mock.assert_called_once_with()
 
 
 class NoInstanceTypesInSysMetadata(_MoveClaimTestCase):
