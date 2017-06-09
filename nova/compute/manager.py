@@ -3644,6 +3644,16 @@ class ComputeManager(manager.Manager):
             migration.status = 'reverted'
             migration.save(context.elevated())
 
+            # NOTE(ndipanov): We need to do this here because dropping the
+            # claim means we lose the migration_context data. We really should
+            # fix this by moving the drop_move_claim call to the
+            # finish_revert_resize method as this is racy (revert is dropped,
+            # but instance resources will be tracked with the new flavor until
+            # it gets rolled back in finish_revert_resize, which is
+            # potentially wrong for a period of time).
+            instance.revert_migration_context()
+            instance.save()
+
             rt = self._get_resource_tracker(instance.node)
             rt.drop_move_claim(context, instance)
 
@@ -3962,6 +3972,8 @@ class ComputeManager(manager.Manager):
             instance_type = flavors.extract_flavor(instance, prefix='new_')
             self._save_instance_info(instance, instance_type, sys_meta)
             resize_instance = True
+
+        instance.apply_migration_context()
 
         # NOTE(tr3buchet): setup networks on destination host
         self.network_api.setup_networks_on_host(context, instance,

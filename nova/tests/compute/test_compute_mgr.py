@@ -3128,6 +3128,7 @@ class ComputeManagerMigrationTestCase(test.NoDBTestCase):
         # revert_resize() and the return value is passed to driver.destroy().
         # Otherwise we could regress this.
 
+        @mock.patch.object(self.instance, 'revert_migration_context')
         @mock.patch.object(self.compute, '_get_instance_nw_info')
         @mock.patch.object(self.compute, '_is_instance_storage_shared')
         @mock.patch.object(self.compute, 'finish_revert_resize')
@@ -3150,7 +3151,8 @@ class ComputeManagerMigrationTestCase(test.NoDBTestCase):
                     _instance_update,
                     finish_revert_resize,
                     _is_instance_storage_shared,
-                    _get_instance_nw_info):
+                    _get_instance_nw_info,
+                    revert_migration_context):
 
             self.migration.source_compute = self.instance['host']
 
