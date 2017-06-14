@@ -1098,7 +1098,8 @@ class LibvirtConfigGuestInterface(LibvirtConfigGuestDevice):
         dev.set("type", self.net_type)
         if self.net_type == "hostdev":
             dev.set("managed", "yes")
-        dev.append(etree.Element("mac", address=self.mac_addr))
+        if self.mac_addr:
+            dev.append(etree.Element("mac", address=self.mac_addr))
         if self.model:
             dev.append(etree.Element("model", type=self.model))
 
@@ -1122,6 +1123,8 @@ class LibvirtConfigGuestInterface(LibvirtConfigGuestDevice):
             addr_elem.set("function", "0x%s" % (func))
             source_elem.append(addr_elem)
             dev.append(source_elem)
+        elif self.net_type == "network":
+            dev.append(etree.Element("source", network=self.source_dev))
         else:
             dev.append(etree.Element("source", bridge=self.source_dev))
 

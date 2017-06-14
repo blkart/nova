@@ -156,3 +156,11 @@ def set_vif_bandwidth_config(conf, inst_type):
         if len(scope) > 1 and scope[0] == 'quota':
             if scope[1] in bandwidth_items:
                 setattr(conf, scope[1], value)
+
+
+def set_vif_host_backend_libvirt_network_config(conf, source_network):
+    """Populate a LibvirtConfigGuestInterface instance
+    with host backend details for a libvirt network.
+    """
+    conf.net_type = "network"
+    conf.source_dev = source_network
