@@ -12,7 +12,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from oslo_serialization import jsonutils
+from nova.openstack.common import jsonutils
 
 from nova import db
 from nova import exception
@@ -20,7 +20,6 @@ from nova.objects import base
 from nova.objects import fields
 
 
-@base.NovaObjectRegistry.register
 class MigrationContext(base.NovaPersistentObject, base.NovaObject):
     """Data representing additional resources related to a migration.
 

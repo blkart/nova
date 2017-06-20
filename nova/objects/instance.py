@@ -446,8 +446,7 @@ class Instance(base.NovaPersistentObject, base.NovaObject):
     def _save_migration_context(self, context):
         if self.migration_context:
             self.migration_context.instance_uuid = self.uuid
-            with self.migration_context.obj_alternate_context(context):
-                self.migration_context._save()
+            self.migration_context._save()
         else:
             objects.MigrationContext._destroy(context, self.uuid)
 

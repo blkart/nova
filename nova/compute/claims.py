@@ -300,8 +300,7 @@ class MoveClaim(Claim):
             return
 
         mig_context = objects.MigrationContext(
-            context=self.context, instance_uuid=self.instance.uuid,
+            context=self.context, instance_uuid=self.instance['uuid'],
             migration_id=self.migration.id,
-            old_numa_topology=self.instance.numa_topology,
             new_numa_topology=self.claimed_numa_topology)
         return mig_context

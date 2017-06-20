@@ -207,6 +207,7 @@ class ResourceTracker(object):
 
         # Mark the resources in-use for the resize landing on this
         # compute host:
+        instance_ref = obj_base.obj_to_primitive(instance)
         self._update_usage_from_migration(context, instance_ref, image_meta,
                                               self.compute_node, migration)
         elevated = context.elevated()
@@ -291,7 +292,7 @@ class ResourceTracker(object):
                 image_meta = utils.get_image_from_system_metadata(
                         instance['system_metadata'])
 
-            if (instance_type is not None and instance_type.id == itype['id']):
+            if (instance_type is not None and instance_type['id'] == itype['id']):
                 numa_topology = self._get_migration_context_resource(
                     'numa_topology', instance)
                 usage = self._get_usage_dict(
@@ -621,9 +622,9 @@ class ResourceTracker(object):
 
     def _get_migration_context_resource(self, resource, instance,
                                         prefix='new_', itype=None):
-        migration_context = instance.migration_context
+        migration_context = instance.get('migration_context')
         if migration_context:
-            return getattr(migration_context, prefix + resource)
+            return migration_context[prefix + resource]
         else:
             return None
 
