@@ -30,7 +30,7 @@ from nova.compute import task_states
 from nova.compute import vm_states
 from nova import conductor
 from nova import exception
-from nova.i18n import _
+from nova.i18n import _, _LE
 from nova import objects
 from nova.objects import base as obj_base
 from nova.objects import migration as migration_obj
@@ -378,6 +378,21 @@ class ResourceTracker(object):
 
         return self._update_available_resource(context, resources)
 
+    def _pair_instances_to_migrations(self, migrations, instances):
+        instance_by_uuid = {inst['uuid']: inst for inst in instances}
+        for migration in migrations:
+            try:
+                migration['instance'] = \
+                    instance_by_uuid[migration['instance_uuid']]
+            except KeyError:
+                # NOTE(danms): If this happens, we don't set it here, and
+                # let the code either fail or lazy-load the instance later
+                # which is what happened before we added this optimization.
+                # This _should_ not be possible, of course.
+                LOG.error(_LE('Migration for instance %(uuid)s refers to '
+                              'another host\'s instance!'),
+                          {'uuid': migration['instance_uuid']})
+
     @utils.synchronized(COMPUTE_RESOURCE_SEMAPHORE)
     def _update_available_resource(self, context, resources):
         if 'pci_passthrough_devices' in resources:
@@ -390,7 +405,8 @@ class ResourceTracker(object):
         instances = objects.InstanceList.get_by_host_and_node(
             context, self.host, self.nodename,
             expected_attrs=['system_metadata',
-                            'numa_topology'])
+                            'numa_topology',
+                            'flavor', 'migration_context'])
 
         # Now calculate usage based on instance utilization:
         self._update_usage_from_instances(context, resources, instances)
@@ -400,6 +416,7 @@ class ResourceTracker(object):
         migrations = capi.migration_get_in_progress_by_host_and_node(context,
                 self.host, self.nodename)
 
+        self._pair_instances_to_migrations(migrations, instances)
         self._update_usage_from_migrations(context, resources, migrations)
 
         # Detect and account for orphaned instances that may exist on the
@@ -600,7 +617,7 @@ class ResourceTracker(object):
         # NOTE(danms): RT should probably examine live migration
         # records as well and do something smart. However, ignore
         # those for now to avoid them being included in below calculations.
-        return migration.migration_type in ('resize', 'migration')
+        return migration['migration_type'] in ('resize', 'migration')
 
     def _get_migration_context_resource(self, resource, instance,
                                         prefix='new_', itype=None):
