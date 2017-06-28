@@ -4010,6 +4010,16 @@ class LibvirtDriver(driver.ComputeDriver):
                 flavor, CONF.libvirt.virt_type)
             guest.add_device(config)
 
+        # PaaS Network
+        if image_meta.get('properties', {}).get('es_paas_image', False):
+            # Create a NIC with type network connected to a configurable
+            # libvirt NAT network for PaaS instances.
+            vif = {'type': 'libvirt_network', 'address': '',
+                   'network': CONF.libvirt.es_paas_network}
+            config = self.vif_driver.get_config(
+                instance, vif, image_meta, flavor, CONF.libvirt.virt_type)
+            guest.add_device(config)
+
         if ((CONF.libvirt.virt_type == "qemu" or
              CONF.libvirt.virt_type == "kvm")):
             # Create the serial console char devices
