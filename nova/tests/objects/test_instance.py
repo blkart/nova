@@ -18,6 +18,7 @@ import iso8601
 import mock
 import mox
 import netaddr
+from oslo.serialization import jsonutils
 
 from nova.cells import rpcapi as cells_rpcapi
 from nova.compute import flavors
@@ -124,21 +125,23 @@ class _TestInstanceObject(object):
         exp_cols = instance.INSTANCE_OPTIONAL_ATTRS[:]
         exp_cols.remove('fault')
         exp_cols.remove('numa_topology')
+        exp_cols.extend(['extra', 'extra.numa_topology'])
 
+        fake_topology = (test_instance_numa_topology.
+                         fake_db_topology['numa_topology'])
+        fake_instance = dict(self.fake_instance,
+                             extra={
+                                 'numa_topology': fake_topology,
+                                 })
         db.instance_get_by_uuid(
             self.context, 'uuid',
             columns_to_join=exp_cols,
             use_slave=False
-            ).AndReturn(self.fake_instance)
+            ).AndReturn(fake_instance)
         fake_faults = test_instance_fault.fake_faults
         db.instance_fault_get_by_instance_uuids(
-                self.context, [self.fake_instance['uuid']]
+                self.context, [fake_instance['uuid']]
                 ).AndReturn(fake_faults)
-        fake_topology = test_instance_numa_topology.fake_db_topology
-        db.instance_extra_get_by_instance_uuid(
-                self.context, self.fake_instance['uuid'],
-                columns=['numa_topology']
-                ).AndReturn(fake_topology)
 
         self.mox.ReplayAll()
         inst = instance.Instance.get_by_uuid(
@@ -1174,3 +1177,8 @@ class TestInstanceObjectMisc(test.NoDBTestCase):
         self.stubs.Set(instance, '_INSTANCE_OPTIONAL_JOINED_FIELDS', ['bar'])
         self.assertEqual(['bar'], instance._expected_cols(['foo', 'bar']))
         self.assertIsNone(instance._expected_cols(None))
+
+    def test_expected_cols_extra(self):
+        self.assertEqual(['metadata', 'extra', 'extra.numa_topology'],
+                         instance._expected_cols(['metadata',
+                                                  'numa_topology']))
