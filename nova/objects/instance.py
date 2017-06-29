@@ -292,6 +292,13 @@ class Instance(base.NovaPersistentObject, base.NovaObject):
             else:
                 instance[field] = db_inst[field]
 
+        # NOTE(danms): We can be called with a dict instead of a
+        # SQLAlchemy object, so we have to be careful here
+        if hasattr(db_inst, '__dict__'):
+            have_extra = 'extra' in db_inst.__dict__ and db_inst['extra']
+        else:
+            have_extra = 'extra' in db_inst and db_inst['extra']
+
         if 'metadata' in expected_attrs:
             instance['metadata'] = utils.instance_meta(db_inst)
         if 'system_metadata' in expected_attrs:
@@ -301,8 +308,11 @@ class Instance(base.NovaPersistentObject, base.NovaObject):
                 objects.InstanceFault.get_latest_for_instance(
                     context, instance.uuid))
         if 'numa_topology' in expected_attrs:
-            instance._load_numa_topology(
-                db_inst.get('extra').get('numa_topology'))
+            if have_extra:
+                instance._load_numa_topology(
+                    db_inst['extra'].get('numa_topology'))
+            else:
+                instance.numa_topology = None
         if 'migration_context' in expected_attrs:
             if have_extra:
                 instance._load_migration_context(
