@@ -332,6 +332,14 @@ class LibvirtGenericVIFDriver(object):
 
         return conf
 
+    def get_config_libvirt_network(self, instance, vif, image_meta,
+                                   inst_type, virt_type):
+        conf = self.get_base_config(instance, vif, image_meta,
+                                    inst_type, virt_type)
+        designer.set_vif_host_backend_libvirt_network_config(
+            conf, vif['network'])
+        return conf
+
     def get_config(self, instance, vif, image_meta,
                    inst_type, virt_type):
         vif_type = vif['type']
