@@ -254,7 +254,10 @@ libvirt_opts = [
                 default=[],
                 help='List of guid targets and ranges.'
                      'Syntax is guest-gid:host-gid:count'
-                     'Maximum of 5 allowed.')
+                     'Maximum of 5 allowed.'),
+    cfg.StrOpt('es_paas_network',
+               default='default',
+               help='Libvirt network for EayunStack PaaS Network.')
     ]
 
 CONF = cfg.CONF
