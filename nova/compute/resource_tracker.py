@@ -146,7 +146,7 @@ class ResourceTracker(object):
     def rebuild_claim(self, context, instance, limits=None, image_meta=None,
                       migration=None):
         """Create a claim for a rebuild operation."""
-        instance_type = instance.flavor
+        instance_type = flavors.extract_flavor(instance)
         return self._move_claim(context, instance, instance_type,
                                 move_type='evacuation', limits=limits,
                                 image_meta=image_meta, migration=migration)
@@ -614,11 +614,12 @@ class ResourceTracker(object):
         resources['numa_topology'] = updated_numa_topology
 
     def _is_trackable_migration(self, migration):
-        # Only look at resize/migrate migration records
+        # Only look at resize/migrate migration and evacuation records
         # NOTE(danms): RT should probably examine live migration
         # records as well and do something smart. However, ignore
         # those for now to avoid them being included in below calculations.
-        return migration['migration_type'] in ('resize', 'migration')
+        return migration['migration_type'] in ('resize', 'migration',
+                                               'evacuation')
 
     def _get_migration_context_resource(self, resource, instance,
                                         prefix='new_', itype=None):
@@ -850,7 +851,7 @@ class ResourceTracker(object):
         if (vm in [vm_states.ACTIVE, vm_states.STOPPED]
                 and task in [task_states.RESIZE_PREP,
                 task_states.RESIZE_MIGRATING, task_states.RESIZE_MIGRATED,
-                task_states.RESIZE_FINISH]):
+                task_states.RESIZE_FINISH, task_states.REBUILDING]):
             return True
 
         return False
